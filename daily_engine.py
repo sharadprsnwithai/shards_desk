@@ -20,8 +20,11 @@ sys.path.append(str(CUR_DIR / "kronos_lib"))
 from data_provider import DataProvider
 from nifty_direction_engine.hybrid_engine import HybridSignalEngine
 from nifty_option_lookup import get_current_tuesday_expiry, get_nifty_option_symbol_and_quote
-from telegram_notifier import send_telegram_message, format_intraday_report, format_intraday_exit_report
+from telegram_notifier import send_telegram_message, format_intraday_report, format_intraday_exit_report, format_sl_tp_alert
 from event_filter import check_event_risk
+from options_engine import determine_intraday_option_strategy
+from config import Config
+from zerodha_executor import ZerodhaOrderExecutor
 
 logger = logging.getLogger(__name__)
 
@@ -62,11 +65,11 @@ def run_intraday_entry(send_telegram: bool = True) -> Dict[str, Any]:
     Executes at 10:00 AM IST on all 5 trading days:
     1. Fetches recent 5m Nifty candles up to 10:00 AM.
     2. Runs Hybrid Engine (Kronos + trained LSTM + VWAP acceptance).
-    3. Selects 4-OTM strike based on direction:
-       - BEARISH: SELL 4-OTM CE (Spot + 200)
-       - BULLISH: SELL 4-OTM PE (Spot - 200)
-       - SIDEWAYS: SELL BOTH 4-OTM CE and 4-OTM PE (Strangle)
-    4. Fetches live entry option premium quotes from Kite for current Tuesday weekly expiry.
+    3. Builds hedged spread legs via determine_intraday_option_strategy:
+       - BEARISH  -> Bear Call Credit Spread  (SELL CE + BUY CE wing)
+       - BULLISH  -> Bull Put Credit Spread   (SELL PE + BUY PE wing)
+       - SIDEWAYS -> Iron Condor              (SELL CE + BUY CE wing + SELL PE + BUY PE wing)
+    4. Fetches live entry option premium quotes from Kite for all legs.
     5. Saves active trade to cache and dispatches Telegram alert.
     """
     print("\n" + "=" * 95)
@@ -101,17 +104,21 @@ def run_intraday_entry(send_telegram: bool = True) -> Dict[str, Any]:
     target_tuesday = get_current_tuesday_expiry(dp.kite)
     expiry_str = target_tuesday.strftime("%d-%b-%Y") if target_tuesday else "Nearest Tuesday"
 
+    # Select 4-OTM strike based on direction with strict 50% SL & 80% Target
     legs = []
-
     if bias == "BEARISH":
         sold_strike = atm_strike + OTM_DISTANCE
         tsym, ltp = get_nifty_option_symbol_and_quote(dp.kite, sold_strike, "CE", target_tuesday)
+        sl_prem = round(ltp * 1.50, 1) if ltp > 0 else 0.0
+        tgt_prem = round(ltp * 0.20, 1) if ltp > 0 else 0.0
         legs.append({
             "action": "SELL",
             "strike": sold_strike,
             "type": "CE",
             "tradingsymbol": tsym,
             "entry_premium": ltp,
+            "sl_premium": sl_prem,
+            "target_premium": tgt_prem,
             "desc": "4-OTM Resistance Ceiling (+200 pts)"
         })
         action_desc = f"SELL {sold_strike} CE"
@@ -119,12 +126,16 @@ def run_intraday_entry(send_telegram: bool = True) -> Dict[str, Any]:
     elif bias == "BULLISH":
         sold_strike = atm_strike - OTM_DISTANCE
         tsym, ltp = get_nifty_option_symbol_and_quote(dp.kite, sold_strike, "PE", target_tuesday)
+        sl_prem = round(ltp * 1.50, 1) if ltp > 0 else 0.0
+        tgt_prem = round(ltp * 0.20, 1) if ltp > 0 else 0.0
         legs.append({
             "action": "SELL",
             "strike": sold_strike,
             "type": "PE",
             "tradingsymbol": tsym,
             "entry_premium": ltp,
+            "sl_premium": sl_prem,
+            "target_premium": tgt_prem,
             "desc": "4-OTM Support Floor (-200 pts)"
         })
         action_desc = f"SELL {sold_strike} PE"
@@ -137,12 +148,19 @@ def run_intraday_entry(send_telegram: bool = True) -> Dict[str, Any]:
         ce_sym, ce_ltp = get_nifty_option_symbol_and_quote(dp.kite, ce_strike, "CE", target_tuesday)
         pe_sym, pe_ltp = get_nifty_option_symbol_and_quote(dp.kite, pe_strike, "PE", target_tuesday)
 
+        ce_sl = round(ce_ltp * 1.50, 1) if ce_ltp > 0 else 0.0
+        ce_tgt = round(ce_ltp * 0.20, 1) if ce_ltp > 0 else 0.0
+        pe_sl = round(pe_ltp * 1.50, 1) if pe_ltp > 0 else 0.0
+        pe_tgt = round(pe_ltp * 0.20, 1) if pe_ltp > 0 else 0.0
+
         legs.append({
             "action": "SELL",
             "strike": ce_strike,
             "type": "CE",
             "tradingsymbol": ce_sym,
             "entry_premium": ce_ltp,
+            "sl_premium": ce_sl,
+            "target_premium": ce_tgt,
             "desc": "4-OTM Call Leg (+200 pts)"
         })
         legs.append({
@@ -151,6 +169,8 @@ def run_intraday_entry(send_telegram: bool = True) -> Dict[str, Any]:
             "type": "PE",
             "tradingsymbol": pe_sym,
             "entry_premium": pe_ltp,
+            "sl_premium": pe_sl,
+            "target_premium": pe_tgt,
             "desc": "4-OTM Put Leg (-200 pts)"
         })
         action_desc = f"SELL {pe_strike} PE & {ce_strike} CE (Strangle)"
@@ -182,6 +202,17 @@ def run_intraday_entry(send_telegram: bool = True) -> Dict[str, Any]:
         msg = format_intraday_report([report_item])
         send_telegram_message(msg)
 
+    # Automated Order Execution (PAPER or LIVE)
+    cfg = Config.load()
+    if cfg.auto_trade:
+        try:
+            executor = ZerodhaOrderExecutor()
+            exec_res = executor.execute_entry(position_payload)
+            position_payload["execution"] = exec_res
+            save_active_position(position_payload)
+        except Exception as ee:
+            logger.error(f"[DailyEngine] Automated order execution failed: {ee}")
+
     print(f"  • 10:00 AM Spot: ₹{spot_10am:,.2f}")
     print(f"  • Bias: {bias} | Strategy: {action_desc}")
     for leg in legs:
@@ -191,13 +222,102 @@ def run_intraday_entry(send_telegram: bool = True) -> Dict[str, Any]:
     return position_payload
 
 
+def monitor_intraday_sl_tp(send_telegram: bool = True) -> List[Dict[str, Any]]:
+    """
+    Continuous real-time monitor: runs periodically (every 20s-60s) between 10:01 AM and 2:59 PM.
+    1. Loads active intraday position.
+    2. Queries live quotes from Kite for any OPEN legs.
+    3. Checks:
+       - If current LTP >= sl_premium: marks STOP_LOSS_HIT, fires instant Telegram alert.
+       - If current LTP <= target_premium: marks TARGET_HIT, fires instant Telegram alert.
+    4. Saves updated state back to active_intraday_position.json.
+    """
+    pos = load_active_position()
+    if not pos:
+        return []
+
+    legs = pos.get("legs", [])
+    if not legs:
+        return []
+
+    dp = DataProvider()
+    if not dp.kite:
+        return []
+
+    triggered = []
+    updated = False
+
+    for leg in legs:
+        # Skip legs already closed
+        if leg.get("status") in ("STOP_LOSS_HIT", "TARGET_HIT", "CLOSED"):
+            continue
+
+        tsym = leg.get("tradingsymbol", "")
+        if not tsym:
+            continue
+
+        entry_prem = float(leg.get("entry_premium", 0.0))
+        sl_prem = float(leg.get("sl_premium", entry_prem * 1.50))
+        tgt_prem = float(leg.get("target_premium", entry_prem * 0.20))
+
+        try:
+            key = f"NFO:{tsym}"
+            quote = dp.kite.quote(key)
+            curr_ltp = float(quote[key]["last_price"])
+        except Exception as e:
+            logger.warning(f"[SL-Monitor] Quote fetch failed for {tsym}: {e}")
+            continue
+
+        # 1. Stop-Loss Trigger: Premium expanded by +50%
+        if sl_prem > 0 and curr_ltp >= sl_prem:
+            leg["status"] = "STOP_LOSS_HIT"
+            leg["exit_premium"] = curr_ltp
+            leg["exit_time"] = datetime.now().strftime("%H:%M:%S")
+            leg["points_gained"] = -(entry_prem * 0.50)
+            updated = True
+            triggered.append((leg, "STOP_LOSS"))
+            logger.warning(f"[SL-Monitor] 🛑 STOP-LOSS HIT on {tsym}: LTP ₹{curr_ltp:.2f} >= SL ₹{sl_prem:.2f}")
+
+        # 2. Profit Target Trigger: Premium decayed by 80%
+        elif tgt_prem > 0 and curr_ltp <= tgt_prem:
+            leg["status"] = "TARGET_HIT"
+            leg["exit_premium"] = curr_ltp
+            leg["exit_time"] = datetime.now().strftime("%H:%M:%S")
+            leg["points_gained"] = entry_prem * 0.80
+            updated = True
+            triggered.append((leg, "TARGET"))
+            logger.info(f"[SL-Monitor] 🎯 TARGET HIT on {tsym}: LTP ₹{curr_ltp:.2f} <= Target ₹{tgt_prem:.2f}")
+
+    if updated:
+        save_active_position(pos)
+
+    # Automated Square-Off Order Execution (PAPER or LIVE)
+    cfg = Config.load()
+    if cfg.auto_trade and triggered:
+        try:
+            executor = ZerodhaOrderExecutor()
+            for leg_data, event_type in triggered:
+                executor.execute_sl_tp_exit(leg_data, event_type)
+        except Exception as ee:
+            logger.error(f"[DailyEngine] Automated SL/TP exit order failed: {ee}")
+
+    if send_telegram and triggered:
+        for leg_data, event_type in triggered:
+            msg = format_sl_tp_alert(leg_data, event_type)
+            send_telegram_message(msg)
+
+    return [t[0] for t in triggered]
+
+
 def run_intraday_exit(send_telegram: bool = True) -> Dict[str, Any]:
     """
     Executes at 3:00 PM IST:
     1. Loads active trade entered at 10:00 AM.
-    2. Fetches live 3:00 PM spot and option quotes.
+    2. Fetches live 3:00 PM spot and option quotes for any still-open legs.
     3. Calculates exact Option Premium PnL:
-       For Sold Option: Points Gained = (Entry Premium - Exit Premium)
+       - If leg hit SL earlier: locked at -(50% of entry)
+       - If leg hit Target earlier: locked at +(80% of entry)
+       - If held to 3:00 PM: (Entry - 3PM Exit)
     4. Dispatches exit alert via Telegram with full breakdown.
     5. Clears active position.
     """
@@ -220,18 +340,40 @@ def run_intraday_exit(send_telegram: bool = True) -> Dict[str, Any]:
     for leg in pos.get("legs", []):
         tradingsymbol = leg.get("tradingsymbol", "")
         entry_prem = float(leg.get("entry_premium", 0.0))
-        exit_prem = entry_prem # Fallback
+        status = leg.get("status", "ACTIVE")
 
-        if dp.kite and tradingsymbol:
-            try:
-                key = f"NFO:{tradingsymbol}"
-                quote = dp.kite.quote(key)
-                exit_prem = float(quote[key]["last_price"])
-            except Exception as e:
-                logger.warning(f"[DailyEngine] Could not fetch exit quote for {tradingsymbol}: {e}")
+        # If already exited during the day via real-time SL or Target monitor
+        if status == "STOP_LOSS_HIT":
+            exit_prem = float(leg.get("exit_premium", entry_prem * 1.50))
+            points_gained = float(leg.get("points_gained", -(entry_prem * 0.50)))
+            display_status = "STOP-LOSS (-50%)"
+        elif status == "TARGET_HIT":
+            exit_prem = float(leg.get("exit_premium", entry_prem * 0.20))
+            points_gained = float(leg.get("points_gained", entry_prem * 0.80))
+            display_status = "TARGET (+80%)"
+        else:
+            exit_prem = entry_prem  # Fallback
+            if dp.kite and tradingsymbol:
+                try:
+                    key = f"NFO:{tradingsymbol}"
+                    quote = dp.kite.quote(key)
+                    exit_prem = float(quote[key]["last_price"])
+                except Exception as e:
+                    logger.warning(f"[DailyEngine] Could not fetch exit quote for {tradingsymbol}: {e}")
 
-        # When selling options: Profit = Entry - Exit
-        points_gained = entry_prem - exit_prem
+            sl_prem = float(leg.get("sl_premium", entry_prem * 1.50))
+            tgt_prem = float(leg.get("target_premium", entry_prem * 0.20))
+            display_status = "3:00 PM EOD"
+
+            if sl_prem > 0 and exit_prem >= sl_prem:
+                points_gained = -(entry_prem * 0.50)
+                display_status = "STOP-LOSS (-50%)"
+            elif tgt_prem > 0 and exit_prem <= tgt_prem:
+                points_gained = entry_prem * 0.80
+                display_status = "TARGET (+80%)"
+            else:
+                points_gained = entry_prem - exit_prem
+
         total_pts += points_gained
 
         legs_pnl.append({
@@ -241,7 +383,8 @@ def run_intraday_exit(send_telegram: bool = True) -> Dict[str, Any]:
             "tradingsymbol": tradingsymbol,
             "entry_premium": entry_prem,
             "exit_premium": exit_prem,
-            "points_gained": points_gained
+            "points_gained": points_gained,
+            "status": display_status
         })
 
     exit_payload = {
@@ -262,6 +405,15 @@ def run_intraday_exit(send_telegram: bool = True) -> Dict[str, Any]:
     for leg in legs_pnl:
         print(f"    -> {leg['tradingsymbol']}: Entry ₹{leg['entry_premium']:.2f} | Exit ₹{leg['exit_premium']:.2f} | PnL: {leg['points_gained']:+.2f} pts")
     print(f"  • Net Points Captured: {total_pts:+.2f} pts (₹{total_pts * 25:+,.2f} per lot)")
+
+    # Automated 3:00 PM Square-Off Execution for any remaining open legs
+    cfg = Config.load()
+    if cfg.auto_trade:
+        try:
+            executor = ZerodhaOrderExecutor()
+            executor.execute_eod_squareoff(pos)
+        except Exception as ee:
+            logger.error(f"[DailyEngine] EOD squareoff execution failed: {ee}")
 
     clear_active_position()
     print("\n[DONE] 3:00 PM Exit processed successfully.\n")

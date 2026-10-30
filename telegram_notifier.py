@@ -43,9 +43,7 @@ def format_options_report(forecasts: List[Dict[str, Any]], timeframe: str = "Mon
     """
     header_title = f"🎯 <b>SHARAD'S {timeframe.upper()} OPTION SELLING DESK</b>"
     lines = [
-        header_title,
-        "<i>Powered by NeoQuasar/Kronos Foundation Model & NSE Tick Rules</i>",
-        "━━━━━━━━━━━━━━━━━━━━"
+        header_title
     ]
 
     for item in forecasts:
@@ -85,8 +83,6 @@ def format_options_report(forecasts: List[Dict[str, Any]], timeframe: str = "Mon
 
         lines.append("\n".join(block))
         lines.append("────────────────────")
-
-    lines.append("⚠️ <i>Strict Risk Rule: Maintain protective hedges & stop losses. Educational AI quantitative model.</i>")
     return "\n\n".join(lines)
 
 
@@ -95,10 +91,7 @@ def format_intraday_report(forecasts: List[Dict[str, Any]]) -> str:
     Formats the 10:00 AM Intraday forecast into an HTML Telegram message with explicit Buy/Sell strikes.
     """
     lines = [
-        "⚡ <b>10:00 AM INTRADAY OPTION SELLING DESK (NIFTY 50)</b>",
-        "<i>Rule: 4-OTM (200-Pt Buffer) | Current Tuesday Weekly Expiry</i>",
-        "<i>Holding Window: 10:00 AM → 3:00 PM IST (Full Daily Theta Decay)</i>",
-        "━━━━━━━━━━━━━━━━━━━━"
+        "⚡ <b>10:00 AM INTRADAY OPTION SELLING DESK (NIFTY 50)</b>"
     ]
 
     for item in forecasts:
@@ -130,19 +123,21 @@ def format_intraday_report(forecasts: List[Dict[str, Any]]) -> str:
                 typ = leg.get("type", "PE")
                 tsym = leg.get("tradingsymbol", "")
                 prem = leg.get("entry_premium", 0.0)
+                sl_prem = leg.get("sl_premium", 0.0)
                 desc = leg.get("desc", "")
                 icon = "🔴" if act == "SELL" else "🟢"
                 prem_str = f" | Entry LTP: <b>₹{prem:.2f}</b>" if prem > 0 else ""
+                sl_str = f" | SL: <b>₹{sl_prem:.2f}</b>" if sl_prem > 0 else ""
                 tsym_str = f" [<code>{tsym}</code>]" if tsym else ""
-                block.append(f"   {icon} <b>{act} {stk} {typ}</b>{tsym_str}{prem_str} ({desc})")
+                block.append(f"   {icon} <b>{act} {stk} {typ}</b>{tsym_str}{prem_str}{sl_str} ({desc})")
         else:
             block.append(f"   💡 {action}")
 
         block.extend([
             "",
             "⚡ <b>EXECUTION & EXIT RULES:</b>",
-            "   ⏱️ <b>Holding Period:</b> Hold until <b>3:00 PM IST</b> to capture full theta decay",
-            "   🎯 <b>Exit Alert:</b> Automated PnL report will be dispatched at <b>3:00 PM IST sharp</b>"
+            "   🛑 <b>Stop-Loss:</b> Exit leg if premium expands by <b>+50%</b>",
+            "   🎯 <b>Target / Exit:</b> Book at <b>80% decay</b> or automated report at <b>3:00 PM IST</b>"
         ])
 
         if event_note:
@@ -150,8 +145,6 @@ def format_intraday_report(forecasts: List[Dict[str, Any]]) -> str:
 
         lines.append("\n".join(block))
         lines.append("────────────────────")
-
-    lines.append("⚠️ <i>Strict Capital Rule: Automated Intraday Desk. Zero overnight risk.</i>")
     return "\n\n".join(lines)
 
 
@@ -160,9 +153,7 @@ def format_intraday_exit_report(exit_data: Dict[str, Any]) -> str:
     Formats the 3:00 PM exit alert showing Option Premium PnL points gained/lost.
     """
     lines = [
-        "🏁 <b>3:00 PM INTRADAY OPTION DESK — EXIT & PnL ALERT</b>",
-        "<i>Status: Square-off all 10:00 AM Intraday positions (Full Theta Decay Captured)</i>",
-        "━━━━━━━━━━━━━━━━━━━━"
+        "🏁 <b>3:00 PM INTRADAY OPTION DESK — EXIT & PnL ALERT</b>"
     ]
 
     spot_10am = exit_data.get("spot_10am", 0.0)
@@ -193,10 +184,11 @@ def format_intraday_exit_report(exit_data: Dict[str, Any]) -> str:
         pnl_icon = "🟢" if pts_gained >= 0 else "🔴"
         sym_label = f"<code>{tsym}</code>" if tsym else f"{stk} {typ}"
 
+        status_str = f" [{leg.get('status')}]" if leg.get('status') else ""
         lines.append(
             f"{pnl_icon} <b>{action} {sym_label}</b>:\n"
             f"   • Entry (10:00 AM): <b>₹{entry_p:.2f}</b>\n"
-            f"   • Exit  (3:00 PM):  <b>₹{exit_p:.2f}</b>\n"
+            f"   • Exit  (3:00 PM):  <b>₹{exit_p:.2f}</b>{status_str}\n"
             f"   • Net Move: <b>{pts_gained:+.2f} pts</b> per lot"
         )
 
@@ -208,7 +200,38 @@ def format_intraday_exit_report(exit_data: Dict[str, Any]) -> str:
         f"{overall_icon} <b>TOTAL POINTS CAPTURED: {total_pts:+.2f} pts</b>\n"
         f"💵 <b>Net PnL (per 1 Lot): ₹{approx_rs:+,.2f}</b>"
     )
-    lines.append("━━━━━━━━━━━━━━━━━━━━")
     lines.append("✅ <i>Position squared off. Desk closed for today.</i>")
 
     return "\n\n".join(lines)
+
+
+def format_sl_tp_alert(leg: Dict[str, Any], event_type: str) -> str:
+    """
+    Formats real-time alert when a leg hits +50% Stop-Loss or 80% Profit Target.
+    """
+    action = leg.get("action", "SELL")
+    stk = leg.get("strike", 0)
+    typ = leg.get("type", "CE")
+    tsym = leg.get("tradingsymbol", f"{stk} {typ}")
+    entry_p = float(leg.get("entry_premium", 0.0))
+    curr_p = float(leg.get("exit_premium", 0.0))
+    pts = entry_p - curr_p
+
+    if event_type == "STOP_LOSS":
+        header = "🛑 <b>INTRADAY ALERT: STOP-LOSS TRIGGERED (-50%)</b>"
+        note = "⚠️ <i>Action: Square-off this leg immediately to protect capital. The opposite leg remains active until 3:00 PM.</i>"
+    else:
+        header = "🎯 <b>INTRADAY ALERT: PROFIT TARGET HIT (+80% DECAY)</b>"
+        note = "✅ <i>Action: Book profit on this leg now.</i>"
+
+    lines = [
+        header,
+        f"🔴 <b>{action} {tsym}</b>",
+        f"• Entry LTP: <b>₹{entry_p:.2f}</b>",
+        f"• Trigger LTP: <b>₹{curr_p:.2f}</b>",
+        f"• Net PnL: <b>{pts:+.2f} pts</b> per lot",
+        "",
+        note
+    ]
+    return "\n".join(lines)
+

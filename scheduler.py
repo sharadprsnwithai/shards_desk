@@ -4,7 +4,8 @@ from datetime import datetime, date, timedelta
 import pytz
 
 from monthly_engine import run_monthly_analysis
-from daily_engine import run_intraday_entry, run_intraday_exit
+from daily_engine import run_intraday_entry, run_intraday_exit, monitor_intraday_sl_tp
+from config import Config
 
 logger = logging.getLogger(__name__)
 logging.basicConfig(level=logging.INFO, format="%(asctime)s [%(levelname)s] %(message)s")
@@ -26,6 +27,7 @@ def check_scheduled_triggers(
     state: dict,
     run_intraday_entry_fn=run_intraday_entry,
     run_intraday_exit_fn=run_intraday_exit,
+    monitor_intraday_fn=monitor_intraday_sl_tp,
     train_monthly_fn=None,
     run_monthly_fn=run_monthly_analysis,
 ) -> dict:
@@ -47,6 +49,17 @@ def check_scheduled_triggers(
         if run_intraday_entry_fn:
             run_intraday_entry_fn(send_telegram=True)
         state["last_entry_date"] = today
+
+    # 1b. Real-Time Monitor: Weekday 10:01 AM -> 2:59 PM (Mon-Fri) checks 50% SL & 80% Target
+    is_active_session = (weekday < 5) and (
+        (hour == 10 and minute > 0) or
+        (11 <= hour < 15)
+    )
+    if is_active_session and monitor_intraday_fn:
+        try:
+            monitor_intraday_fn(send_telegram=True)
+        except Exception as e:
+            logger.warning(f"[Scheduler] Intraday SL/TP monitor error: {e}")
 
     # 2. 3:00 PM (15:00) IST Weekday Intraday Exit & PnL (Mon-Fri)
     if weekday < 5 and hour == 15 and minute == 0 and state.get("last_exit_date") != today:
@@ -99,11 +112,14 @@ def start_scheduler():
     4. On the last day of every month at 5:00 PM (17:00) IST:
        - Executes 30-Day Monthly Positional Option Desk & Telegram Alert
     """
+    cfg = Config.load()
     logger.info("=" * 80)
     logger.info("  🚀  KRONOS TRADING DESK SCHEDULER STARTED")
     logger.info("  Timezone   : Asia/Kolkata (IST)")
-    logger.info("  Schedule 1 : Mon-Fri @ 10:00 AM IST -> 4-OTM Intraday Entry Alert")
-    logger.info("  Schedule 2 : Mon-Fri @ 3:00 PM IST  -> Full Theta Decay Exit & PnL Alert")
+    logger.info(f"  Execution  : [INTRADAY_OPTION_SELLING={cfg.intraday_option_selling}] | Auto-Trade: {cfg.auto_trade} | Lots: {cfg.trade_lots}")
+    logger.info("  Schedule 1 : Mon-Fri @ 10:00 AM IST -> 4-OTM Entry & Order Placement")
+    logger.info("  Monitor    : Mon-Fri @ 10:01 AM - 2:59 PM -> Real-Time 50% SL / 80% TP Watch")
+    logger.info("  Schedule 2 : Mon-Fri @ 3:00 PM IST  -> EOD Square-Off & Final PnL Report")
     logger.info("  Schedule 3 : Last Day of Month @ 4:00 PM IST -> Auto-Retrain Monthly LSTM")
     logger.info("  Schedule 4 : Last Day of Month @ 5:00 PM IST -> Monthly Option Desk Alert")
     logger.info("=" * 80)
