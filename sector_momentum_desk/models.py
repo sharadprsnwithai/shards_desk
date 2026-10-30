@@ -63,3 +63,17 @@ class EntrySignal:
     orh15: float
     orl15: float
     structural_breakout: bool    # always True when signal fires
+
+
+@dataclass
+class ExitSignal:
+    """Phase 2 output: a dynamic 10 EMA trailing or stop-loss exit signal."""
+    timestamp: datetime
+    symbol: str
+    nse_symbol: str
+    direction: str               # "LONG" | "SHORT"
+    exit_price: float
+    reason: str                  # "10_EMA_TRAIL" | "STOP_LOSS" | "SQUARE_OFF_1515"
+    pnl_pts: float
+    pnl_pct: float
+

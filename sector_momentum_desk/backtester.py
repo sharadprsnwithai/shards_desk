@@ -20,10 +20,12 @@ import yfinance as yf
 from sector_momentum_desk.config import (
     BIAS_THRESHOLD,
     DATA_CACHE_DIR,
+    EMA_TRAIL_PERIOD,
     NUM_TOP_STOCKS,
     SECTOR_STOCKS,
     SECTOR_TICKERS,
     SL_BUFFER,
+    USE_EMA_TRAILING,
 )
 
 logger = logging.getLogger(__name__)
@@ -70,6 +72,7 @@ class SectorMomentumBacktester:
         self.period = period
         self.df_5m: Optional[pd.DataFrame] = None
         self.df_daily: Optional[pd.DataFrame] = None
+        self.df_ema10: Optional[pd.DataFrame] = None
         self._all_tickers = (
             ["^NSEI"]
             + list(SECTOR_TICKERS.values())
@@ -85,6 +88,7 @@ class SectorMomentumBacktester:
             logger.info("Loading backtest data from local parquet cache...")
             self.df_5m = pd.read_parquet(file_5m)
             self.df_daily = pd.read_parquet(file_daily)
+            self.df_ema10 = self.df_5m["Close"].ewm(span=EMA_TRAIL_PERIOD, adjust=False).mean()
             logger.info(f"Loaded 5m shape: {self.df_5m.shape}, daily shape: {self.df_daily.shape}")
             return
 
@@ -110,6 +114,7 @@ class SectorMomentumBacktester:
 
         self.df_5m = df_5m
         self.df_daily = df_daily
+        self.df_ema10 = self.df_5m["Close"].ewm(span=EMA_TRAIL_PERIOD, adjust=False).mean()
         logger.info(f"Cached backtest data to {CACHE_DIR}")
 
     def run(self) -> list[DayResult]:
@@ -295,6 +300,7 @@ class SectorMomentumBacktester:
         entry_price = 0.0
         stop_loss = 0.0
         entry_time_str = ""
+        entry_ts = None
 
         candle_times = list(session_candles.index)
 
@@ -357,6 +363,7 @@ class SectorMomentumBacktester:
 
                         # ── ALL 4 GATES PASSED: ENTER TRADE ────────────────
                         in_trade = True
+                        entry_ts = c_ts
                         entry_time_str = c_ts.strftime("%H:%M")
                         if bias == "BULLISH":
                             entry_price = pullback_candle["high"]
@@ -365,12 +372,9 @@ class SectorMomentumBacktester:
                             entry_price = pullback_candle["low"]
                             stop_loss = pullback_candle["high"] * (1.0 + SL_BUFFER)
 
-                        # Continue to see if this same breakout candle hits SL
-                        # (check SL immediately)
-
             # ── If in trade, check exit conditions ───────────────────────────
             if in_trade:
-                # Check Stop Loss hit
+                # 1. Check Hard Stop Loss hit
                 sl_hit = (c_low <= stop_loss) if bias == "BULLISH" else (c_high >= stop_loss)
                 if sl_hit:
                     exit_price = stop_loss
@@ -396,7 +400,45 @@ class SectorMomentumBacktester:
                         rr_achieved=round(rr, 2),
                     )
 
-                # Check 15:15 PM Square-off (end of session)
+                # 2. Check Dynamic 10 EMA Trailing Exit (on candles after entry)
+                if USE_EMA_TRAILING and entry_ts is not None and c_ts > entry_ts:
+                    ema_val = None
+                    if (
+                        self.df_ema10 is not None
+                        and ticker in self.df_ema10.columns
+                        and c_ts in self.df_ema10.index
+                    ):
+                        ema_val = float(self.df_ema10.loc[c_ts, ticker])
+
+                    if ema_val is not None:
+                        ema_trail_triggered = (
+                            (c_close < ema_val) if bias == "BULLISH" else (c_close > ema_val)
+                        )
+                        if ema_trail_triggered:
+                            exit_price = c_close
+                            pnl_pts = (exit_price - entry_price) if direction == "LONG" else (entry_price - exit_price)
+                            pnl_pct = (pnl_pts / entry_price) * 100.0
+                            risk_pts = abs(entry_price - stop_loss)
+                            rr = pnl_pts / risk_pts if risk_pts > 0 else 0.0
+
+                            return Trade(
+                                date=current_date.strftime("%Y-%m-%d"),
+                                symbol=nse_sym,
+                                direction=direction,
+                                sector=sector,
+                                entry_time=entry_time_str,
+                                entry_price=round(entry_price, 2),
+                                stop_loss=round(stop_loss, 2),
+                                exit_time=c_ts.strftime("%H:%M"),
+                                exit_price=round(exit_price, 2),
+                                exit_reason="10_EMA_TRAIL",
+                                pnl_pts=round(pnl_pts, 2),
+                                pnl_pct=round(pnl_pct, 2),
+                                risk_pts=round(risk_pts, 2),
+                                rr_achieved=round(rr, 2),
+                            )
+
+                # 3. Check 15:15 PM Square-off (end of session)
                 if c_ts.time() >= time(15, 15) or i == len(candle_times) - 1:
                     exit_price = c_close
                     pnl_pts = (exit_price - entry_price) if direction == "LONG" else (entry_price - exit_price)

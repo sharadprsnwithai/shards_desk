@@ -425,3 +425,44 @@ def test_breakout_gate4_fail_structural():
         _override_candle={"TCS.NS": bo_candle},
     )
     assert signals == []
+
+
+def test_check_trailing_exit_bullish():
+    """10 EMA trailing exit triggers when candle closes below 10 EMA (BULLISH/LONG)."""
+    from sector_momentum_desk.entry_trigger import EntryTriggerEngine
+
+    candidate = _make_candidate("LONG")
+    engine = EntryTriggerEngine([candidate], bias="BULLISH", dry_run=True)
+
+    # 15 candles rising then last candle drops below 10 EMA
+    prices = [100.0 + i for i in range(14)] + [95.0]  # last candle plunges to 95
+    df = pd.DataFrame({
+        "timestamps": pd.date_range("2024-01-15 09:30", periods=15, freq="5min"),
+        "open": prices, "close": prices,
+        "high": [p + 1 for p in prices], "low": [p - 1 for p in prices],
+        "volume": [1000] * 15,
+    })
+    triggered, latest_close, latest_ema = engine.check_trailing_exit("TCS.NS", df)
+    assert triggered is True
+    assert latest_close < latest_ema
+
+
+def test_check_trailing_exit_bearish():
+    """10 EMA trailing exit triggers when candle closes above 10 EMA (BEARISH/SHORT)."""
+    from sector_momentum_desk.entry_trigger import EntryTriggerEngine
+
+    candidate = _make_candidate("SHORT")
+    engine = EntryTriggerEngine([candidate], bias="BEARISH", dry_run=True)
+
+    # 15 candles falling then last candle jumps above 10 EMA
+    prices = [100.0 - i for i in range(14)] + [105.0]  # last candle surges to 105
+    df = pd.DataFrame({
+        "timestamps": pd.date_range("2024-01-15 09:30", periods=15, freq="5min"),
+        "open": prices, "close": prices,
+        "high": [p + 1 for p in prices], "low": [p - 1 for p in prices],
+        "volume": [1000] * 15,
+    })
+    triggered, latest_close, latest_ema = engine.check_trailing_exit("TCS.NS", df)
+    assert triggered is True
+    assert latest_close > latest_ema
+

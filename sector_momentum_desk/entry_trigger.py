@@ -21,8 +21,18 @@ from typing import Optional
 
 import pandas as pd
 
-from sector_momentum_desk.config import SL_BUFFER, SESSION_END
-from sector_momentum_desk.models import EntrySignal, PullbackState, StockCandidate
+from sector_momentum_desk.config import (
+    SL_BUFFER,
+    SESSION_END,
+    EMA_TRAIL_PERIOD,
+    USE_EMA_TRAILING,
+)
+from sector_momentum_desk.models import (
+    EntrySignal,
+    ExitSignal,
+    PullbackState,
+    StockCandidate,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -261,6 +271,35 @@ class EntryTriggerEngine:
                 return False
             price = float(latest_candle["low"])
             return price < candidate.pdl and price < candidate.orl15
+
+    def check_trailing_exit(
+        self,
+        symbol: str,
+        candles_df: pd.DataFrame,
+    ) -> tuple[bool, float, float]:
+        """
+        10 EMA Trailing Exit Check:
+        Computes 10 EMA on 5m close prices.
+        If latest candle closes across 10 EMA:
+          BULLISH (LONG): latest close < 10 EMA
+          BEARISH (SHORT): latest close > 10 EMA
+        Returns:
+          (is_exit_triggered, latest_close, current_10_ema)
+        """
+        if not USE_EMA_TRAILING or candles_df is None or len(candles_df) < EMA_TRAIL_PERIOD:
+            return False, 0.0, 0.0
+
+        ema10 = candles_df["close"].ewm(span=EMA_TRAIL_PERIOD, adjust=False).mean()
+        latest = candles_df.iloc[-1]
+        latest_close = float(latest["close"])
+        latest_ema = float(ema10.iloc[-1])
+
+        if self._bias == "BULLISH":
+            triggered = latest_close < latest_ema
+        else:
+            triggered = latest_close > latest_ema
+
+        return triggered, latest_close, latest_ema
 
     # ── Telegram ──────────────────────────────────────────────────────────────
 
