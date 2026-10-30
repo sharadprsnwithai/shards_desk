@@ -2,7 +2,7 @@
 set -e
 
 # Export cron environment so variables are accessible inside cron execution
-printenv | grep -E '^(KITE_|TELEGRAM_|TZ|USE_)' > /etc/environment || true
+printenv | grep -E '^(KITE_|TELEGRAM_|TZ|USE_|INTRADAY_|TRADE_|AUTO_|PRODUCT_)' > /etc/environment || true
 
 case "$1" in
   monthly)
