@@ -17,7 +17,7 @@ class Config:
     tz: str
     use_yfinance_fallback: bool
     intraday_option_selling: str = "PAPER"
-    trade_lots: int = 1
+    trade_lots: int = 2
     auto_trade: bool = True
     product_type: str = "MIS"
 
@@ -32,9 +32,9 @@ class Config:
             mode = "PAPER"
 
         try:
-            lots = max(1, int(os.getenv("TRADE_LOTS", "1")))
+            lots = max(1, int(os.getenv("TRADE_LOTS", "2")))
         except ValueError:
-            lots = 1
+            lots = 2
 
         return cls(
             kite_api_key=os.getenv("KITE_API_KEY", "").strip(),
