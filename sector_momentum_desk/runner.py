@@ -113,136 +113,76 @@ def run_live(dry_run: bool) -> None:
 
 # ── Backtest mode ─────────────────────────────────────────────────────────────
 
-def run_backtest(start: str, end: str) -> None:
-    """Replay Phase 1 + Phase 2 for each trading day in the date range."""
-    logger.info(f"=== Sector Momentum Strategy — BACKTEST {start} → {end} ===")
+def run_backtest(period: str = "1mo") -> None:
+    """Run historical backtest over the specified period and print full results."""
+    from sector_momentum_desk.backtester import SectorMomentumBacktester
+
+    logger.info(f"=== Sector Momentum Strategy — BACKTEST ({period}) ===")
+    bt = SectorMomentumBacktester(period=period)
+    bt.load_data()
+    results = bt.run()
 
     DATA_CACHE_DIR.mkdir(parents=True, exist_ok=True)
-    out_path = DATA_CACHE_DIR / f"backtest_{start}_{end}.csv"
+    out_csv = DATA_CACHE_DIR / f"backtest_report_{period}.csv"
 
-    trading_days = pd.bdate_range(start=start, end=end)
-    rows: list[dict] = []
+    print("\n" + "=" * 90)
+    print(f"| {'DATE':<10} | {'NIFTY BIAS':<10} | {'RET':<7} | {'WINNING SECTOR':<14} | {'TOP 3 STOCKS':<28} | {'TRADES':<6} |")
+    print("=" * 90)
 
-    import yfinance as yf
+    all_trades = []
+    csv_rows = []
 
-    for day in trading_days:
-        day_dt = day.to_pydatetime()
-        as_of_930 = day_dt.replace(hour=9, minute=30, second=0, microsecond=0)
-        logger.info(f"Backtesting {day_dt.date()} …")
-
-        # Phase 1
-        engine = SectorMomentumEngine(dry_run=True)
-        try:
-            result = engine.run(as_of=as_of_930)
-        except Exception as exc:
-            logger.warning(f"Phase 1 failed for {day_dt.date()}: {exc}")
-            continue
-
-        if result.nifty_bias == "NEUTRAL" or not result.top_3_stocks:
-            rows.append({
-                "date": day_dt.date(), "bias": result.nifty_bias,
-                "sector": result.winning_sector,
-                "symbol": "", "direction": "", "entry_price": "",
-                "stop_loss": "", "entry_time": "", "pullback_vol": "",
-                "pdh_broken": "", "orh15_broken": "",
-            })
-            continue
-
-        stocks = result.top_3_stocks
-
-        # Phase 2: iterate 5m slots 09:30 → 15:10
-        trigger = EntryTriggerEngine(stocks, result.nifty_bias, dry_run=True)
-        symbols = [s.symbol for s in stocks]
-        fired_signals: list = []
-
-        slot = as_of_930
-        while slot.time() < _SESSION_END_TIME:
-            slot_end = slot + timedelta(minutes=5)
-
-            # Fetch per-stock historical 5m candles up to slot_end
-            stock_candles: dict[str, pd.DataFrame] = {}
-            for sym in symbols:
-                if sym in trigger._signalled:
-                    continue
-                try:
-                    df = yf.download(sym, start=day_dt.date(), end=(day_dt + timedelta(days=1)).date(),
-                                     interval="5m", progress=False, auto_adjust=True)
-                    if not df.empty:
-                        df.index = pd.to_datetime(df.index).tz_localize(None)
-                        df = df[df.index <= pd.Timestamp(slot_end)]
-                        df = df.reset_index()
-                        date_col = df.columns[0]
-                        df["timestamps"] = pd.to_datetime(df[date_col]).dt.tz_localize(None)
-                        df = df.rename(columns={
-                            "Open": "open", "High": "high",
-                            "Low": "low", "Close": "close", "Volume": "volume",
-                        })
-                        stock_candles[sym] = df[["timestamps", "open", "high", "low", "close", "volume"]]
-                except Exception:
-                    pass
-
-            nifty_df = pd.DataFrame()
-            try:
-                nf = yf.download("^NSEI", start=day_dt.date(),
-                                 end=(day_dt + timedelta(days=1)).date(),
-                                 interval="5m", progress=False, auto_adjust=True)
-                if not nf.empty:
-                    nf.index = pd.to_datetime(nf.index).tz_localize(None)
-                    nf = nf[nf.index <= pd.Timestamp(slot_end)].reset_index()
-                    date_col = nf.columns[0]
-                    nf["timestamps"] = pd.to_datetime(nf[date_col]).dt.tz_localize(None)
-                    nf = nf.rename(columns={
-                        "Open": "open", "High": "high",
-                        "Low": "low", "Close": "close", "Volume": "volume",
-                    })
-                    nifty_df = nf[["timestamps", "open", "high", "low", "close", "volume"]]
-            except Exception:
-                pass
-
-            sigs = trigger.on_candle(stock_candles, nifty_df)
-            fired_signals.extend(sigs)
-
-            if len(trigger._signalled) == len(symbols):
-                break
-            slot = slot_end
-
-        # Write one row per signal (or one blank row if no signal)
-        if fired_signals:
-            for sig in fired_signals:
-                rows.append({
-                    "date": day_dt.date(),
-                    "bias": result.nifty_bias,
-                    "sector": result.winning_sector,
-                    "symbol": sig.nse_symbol,
-                    "direction": sig.direction,
-                    "entry_price": sig.entry_price,
-                    "stop_loss": sig.stop_loss,
-                    "entry_time": sig.breakout_candle_ts.strftime("%H:%M"),
-                    "pullback_vol": sig.stop_loss,   # volume stored in PullbackState, not in EntrySignal
-                    "pdh_broken": sig.pdh,
-                    "orh15_broken": sig.orh15,
-                })
-        else:
-            rows.append({
-                "date": day_dt.date(), "bias": result.nifty_bias,
-                "sector": result.winning_sector,
-                "symbol": "NO_SIGNAL", "direction": result.nifty_bias,
-                "entry_price": "", "stop_loss": "", "entry_time": "",
-                "pullback_vol": "", "pdh_broken": "", "orh15_broken": "",
+    for r in results:
+        stocks_str = ", ".join(r.top_stocks[:3]) if r.top_stocks else "-"
+        print(f"| {r.date:<10} | {r.nifty_bias:<10} | {r.nifty_return*100:>+5.2f}% | {r.winning_sector:<14} | {stocks_str:<28} | {len(r.trades):<6} |")
+        for t in r.trades:
+            all_trades.append(t)
+            csv_rows.append({
+                "date": t.date, "symbol": t.symbol, "direction": t.direction,
+                "sector": t.sector, "entry_time": t.entry_time, "entry_price": t.entry_price,
+                "stop_loss": t.stop_loss, "exit_time": t.exit_time, "exit_price": t.exit_price,
+                "exit_reason": t.exit_reason, "pnl_pts": t.pnl_pts, "pnl_pct": t.pnl_pct,
+                "risk_pts": t.risk_pts, "rr_achieved": t.rr_achieved,
             })
 
-    # Save CSV
-    if rows:
-        fieldnames = ["date", "bias", "sector", "symbol", "direction",
-                      "entry_price", "stop_loss", "entry_time",
-                      "pullback_vol", "pdh_broken", "orh15_broken"]
-        with open(out_path, "w", newline="") as f:
-            writer = csv.DictWriter(f, fieldnames=fieldnames)
-            writer.writeheader()
-            writer.writerows(rows)
-        logger.info(f"Backtest saved → {out_path}  ({len(rows)} rows)")
-    else:
-        logger.info("No rows to write.")
+    print("=" * 90)
+    print("\nTRADES EXECUTION DETAIL:")
+    print("=" * 120)
+    print(f"| {'DATE':<10} | {'SYMBOL':<10} | {'DIR':<5} | {'ENTRY':<6} | {'PRICE':<9} | {'SL':<9} | {'EXIT':<6} | {'EXIT PX':<9} | {'REASON':<16} | {'PNL PTS':<8} | {'PNL %':<7} | {'R:R':<5} |")
+    print("=" * 120)
+
+    for t in all_trades:
+        print(f"| {t.date:<10} | {t.symbol:<10} | {t.direction:<5} | {t.entry_time:<6} | {t.entry_price:>9.2f} | {t.stop_loss:>9.2f} | {t.exit_time:<6} | {t.exit_price:>9.2f} | {t.exit_reason:<16} | {t.pnl_pts:>+8.2f} | {t.pnl_pct:>+6.2f}% | {t.rr_achieved:>+5.2f} |")
+    print("=" * 120)
+
+    # Save to CSV
+    if csv_rows:
+        df_csv = pd.DataFrame(csv_rows)
+        df_csv.to_csv(out_csv, index=False)
+        logger.info(f"Saved {len(csv_rows)} trades to {out_csv}")
+
+    # Metrics
+    wins = [t for t in all_trades if t.pnl_pct > 0]
+    losses = [t for t in all_trades if t.pnl_pct <= 0]
+    win_rate = (len(wins) / len(all_trades) * 100.0) if all_trades else 0.0
+    total_pnl = sum(t.pnl_pct for t in all_trades)
+    gross_profit = sum(t.pnl_pct for t in wins)
+    gross_loss = abs(sum(t.pnl_pct for t in losses))
+    profit_factor = (gross_profit / gross_loss) if gross_loss > 0 else 999.0
+
+    print("\n" + "=" * 55)
+    print("SUMMARY PERFORMANCE METRICS:")
+    print("=" * 55)
+    print(f"  Total Trading Days : {len(results)}")
+    print(f"  Days with Bias     : {len([r for r in results if r.nifty_bias != 'NEUTRAL'])}")
+    print(f"  Total Trades Taken : {len(all_trades)}")
+    print(f"  Winning Trades     : {len(wins)} ({win_rate:.1f}%)")
+    print(f"  Losing Trades      : {len(losses)} ({100-win_rate:.1f}%)")
+    print(f"  Total Cumulative % : {total_pnl:+.2f}%")
+    print(f"  Gross Profit       : {gross_profit:+.2f}%")
+    print(f"  Gross Loss         : -{gross_loss:.2f}%")
+    print(f"  Profit Factor      : {profit_factor:.2f}")
+    print("=" * 55 + "\n")
 
 
 # ── Helpers ───────────────────────────────────────────────────────────────────
@@ -277,16 +217,14 @@ def main() -> None:
     parser.add_argument("--mode", choices=["live", "backtest"], required=True)
     parser.add_argument("--dry-run", action="store_true",
                         help="Skip Telegram alerts (live mode).")
-    parser.add_argument("--start", help="Backtest start date YYYY-MM-DD")
-    parser.add_argument("--end",   help="Backtest end date YYYY-MM-DD")
+    parser.add_argument("--period", default="1mo",
+                        help="Backtest period (e.g. 1mo, 60d). Default is 1mo.")
     args = parser.parse_args()
 
     if args.mode == "live":
         run_live(dry_run=args.dry_run)
     else:
-        if not args.start or not args.end:
-            parser.error("--mode backtest requires --start and --end")
-        run_backtest(args.start, args.end)
+        run_backtest(period=args.period)
 
 
 if __name__ == "__main__":

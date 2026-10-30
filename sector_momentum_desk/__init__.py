@@ -3,5 +3,6 @@
 
 from sector_momentum_desk.engine import SectorMomentumEngine
 from sector_momentum_desk.entry_trigger import EntryTriggerEngine
+from sector_momentum_desk.backtester import SectorMomentumBacktester
 
-__all__ = ["SectorMomentumEngine", "EntryTriggerEngine"]
+__all__ = ["SectorMomentumEngine", "EntryTriggerEngine", "SectorMomentumBacktester"]

@@ -39,7 +39,7 @@ SECTOR_STOCKS: dict[str, list[tuple[str, str]]] = {
     "IT": [
         ("TCS.NS",     "TCS"),     ("INFY.NS",    "INFY"),
         ("WIPRO.NS",   "WIPRO"),   ("HCLTECH.NS", "HCLTECH"),
-        ("TECHM.NS",   "TECHM"),   ("LTIM.NS",    "LTIM"),
+        ("TECHM.NS",   "TECHM"),   ("COFORGE.NS", "COFORGE"),
     ],
     "Bank": [
         ("HDFCBANK.NS",  "HDFCBANK"),  ("ICICIBANK.NS",  "ICICIBANK"),
@@ -47,7 +47,7 @@ SECTOR_STOCKS: dict[str, list[tuple[str, str]]] = {
         ("SBIN.NS",      "SBIN"),      ("BANKBARODA.NS", "BANKBARODA"),
     ],
     "Auto": [
-        ("MARUTI.NS",    "MARUTI"),    ("TATAMOTORS.NS", "TATAMOTORS"),
+        ("MARUTI.NS",    "MARUTI"),    ("TVSMOTOR.NS",  "TVSMOTOR"),
         ("BAJAJ-AUTO.NS","BAJAJ-AUTO"),("HEROMOTOCO.NS", "HEROMOTOCO"),
         ("EICHERMOT.NS", "EICHERMOT"),("M&M.NS",        "M&M"),
     ],
