@@ -343,15 +343,17 @@ def test_breakout_all_gates_pass():
     candidate = _make_candidate("LONG", pdh=4200.0, orh15=4195.0)
     engine = EntryTriggerEngine([candidate], bias="BULLISH", dry_run=True)
 
+    # Align with the actual 09:40 candle in _bullish_candles():
+    # open=4215, close=4210 (RED), high=4218, low=4208, volume=10000 (session min)
     pb = PullbackState(
-        symbol="TCS.NS", candle_ts=datetime(2024, 1, 15, 10, 10),
-        candle_open=4218.0, candle_close=4212.0,
-        candle_high=4222.0, candle_low=4210.0,
-        candle_volume=12000.0, direction="LONG",
+        symbol="TCS.NS", candle_ts=datetime(2024, 1, 15, 9, 40),
+        candle_open=4215.0, candle_close=4210.0,
+        candle_high=4218.0, candle_low=4208.0,
+        candle_volume=10000.0, direction="LONG",
     )
     engine._pullback_states["TCS.NS"] = pb
 
-    # Breakout candle: high=4230 > pb.high=4222; price > PDH=4200 & ORH15=4195
+    # Breakout candle: high=4230 > pb.candle_high=4218; price > PDH=4200 & ORH15=4195
     bo_candle = pd.Series({
         "timestamps": pd.Timestamp("2024-01-15 10:15"),
         "open": 4213.0, "close": 4228.0, "high": 4230.0, "low": 4211.0, "volume": 38000,
@@ -364,7 +366,7 @@ def test_breakout_all_gates_pass():
     assert len(signals) == 1
     sig = signals[0]
     assert sig.symbol == "TCS.NS"
-    assert sig.entry_price == 4222.0        # High(C_pb)
+    assert sig.entry_price == 4218.0        # High(C_pb) of the 09:40 candle
     assert sig.stop_loss < sig.entry_price  # SL below entry for LONG
     assert sig.nifty_realigned is True
     assert sig.structural_breakout is True
