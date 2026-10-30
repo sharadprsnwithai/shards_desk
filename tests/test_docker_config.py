@@ -11,9 +11,10 @@ def test_docker_compose_structure():
     assert "kronos-scheduler" in services
     assert "kronos-monthly" in services
     assert "kronos-intraday" in services
+    assert "sector-momentum" in services
 
     # Verify environment file loading as requested by user
-    for s_name in ["kronos-scheduler", "kronos-monthly", "kronos-intraday"]:
+    for s_name in ["kronos-scheduler", "kronos-monthly", "kronos-intraday", "sector-momentum"]:
         assert dc["services"][s_name].get("env_file") == ".env"
 
     # Verify model cache volume persistence

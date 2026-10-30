@@ -146,6 +146,15 @@ Execute immediate scans without waiting for the scheduled times:
   docker compose run --rm kronos-intraday
   ```
 
+* **Run Automated Sector Momentum Desk (Phase 1 & 2 Live Daemon)**:
+  ```bash
+  # Starts the 24/7 background service (9:30 AM Selection + 5m real-time Entry/10 EMA Exit loop)
+  docker compose up -d sector-momentum
+
+  # Follow live logs:
+  docker compose logs -f sector-momentum
+  ```
+
 ### 3. Stop or Restart the Service
 ```bash
 # Restart the background scheduler:
@@ -159,8 +168,9 @@ docker compose down
 
 ## ⏰ Automated Trading & Notification Schedule
 
-| Schedule | Trigger Time (IST) | Traded Index | Strategy Output | Delivery Channel |
+| Schedule | Trigger Time (IST) | Traded Index / Universe | Strategy Output | Delivery Channel |
 | :--- | :--- | :--- | :--- | :--- |
+| **Mon – Fri** | **09:30 AM – 15:15 PM** | **NSE F&O Stocks (8 Sectors)** | **Sector Momentum**: Top 3 Stocks + 5m Pullback Breakout + 10 EMA Trail | Real-Time Telegram Alerts |
 | **Mon – Fri (All 5 Days)** | **10:00 AM** | **NIFTY 50** | **4-OTM (200-pt buffer)** Put/Call Selling (80% TP / 50% SL) | Console + Telegram Alert |
 | **Last Day of Month** | **5:00 PM (17:00)** | **NIFTY, RELIANCE, TCS, HDFC** | 30-Day Range & Spreads (Iron Condor) | Console + Telegram Alert |
 

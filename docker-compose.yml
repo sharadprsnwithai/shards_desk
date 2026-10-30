@@ -45,6 +45,24 @@ services:
     environment:
       - TZ=Asia/Kolkata
 
+  # Automated 9:30 AM Sector Momentum Desk
+  # Runs continuously on weekdays: Phase 1 (09:30 Selection) -> Phase 2 (5m Entry/10 EMA Exit loop) -> 15:15 PM Square-off
+  # Usage: docker compose up -d sector-momentum
+  sector-momentum:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    image: ${DOCKER_USER:-sharadprsn}/kronos-trading-desk:latest
+    container_name: sector_momentum_runner
+    restart: unless-stopped
+    env_file: .env
+    command: ["sector-momentum"]
+    volumes:
+      - ./data_cache:/app/data_cache
+      - ./logs:/var/log
+    environment:
+      - TZ=Asia/Kolkata
+
 volumes:
   # Named persistent volume so the ~400MB Kronos model is cached across container lifecycles
   hf_cache:

@@ -19,6 +19,11 @@ case "$1" in
     echo "  - Schedule 2: Last Day of Month at 5:00 PM (17:00) IST -> 30-Day Monthly Option Selling Desk"
     python /app/scheduler.py
     ;;
+  sector-momentum)
+    echo "[Docker] Starting Sector Momentum Desk (Timezone: $TZ)..."
+    echo "  - Automated 9:30 AM Selection & 5-minute Real-Time Entry/Exit Engine"
+    python /app/sector_momentum_desk/live_daemon.py "${@:2}"
+    ;;
   *)
     exec "$@"
     ;;
