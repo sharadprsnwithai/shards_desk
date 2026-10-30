@@ -66,10 +66,12 @@ class DayResult:
 class SectorMomentumBacktester:
     """
     High-speed, deterministic backtest engine for Sector Momentum Strategy.
+    Supports both official Zerodha Kite API historical data ('zerodha') and 'yfinance'.
     """
 
-    def __init__(self, period: str = "1mo"):
+    def __init__(self, period: str = "6mo", source: str = "zerodha"):
         self.period = period
+        self.source = source
         self.df_5m: Optional[pd.DataFrame] = None
         self.df_daily: Optional[pd.DataFrame] = None
         self.df_ema10: Optional[pd.DataFrame] = None
@@ -81,6 +83,14 @@ class SectorMomentumBacktester:
 
     def load_data(self, force_download: bool = False) -> None:
         """Download or load cached 5m and daily multi-ticker dataframes."""
+        if self.source == "zerodha":
+            from sector_momentum_desk.zerodha_data import fetch_and_cache_zerodha_data
+            days = 180 if self.period in ("6mo", "180d") else 30
+            self.df_5m, self.df_daily = fetch_and_cache_zerodha_data(days=days, force=force_download)
+            self.df_ema10 = self.df_5m["Close"].ewm(span=EMA_TRAIL_PERIOD, adjust=False).mean()
+            logger.info(f"[ZerodhaBacktest] Loaded 5m shape: {self.df_5m.shape}, daily shape: {self.df_daily.shape}")
+            return
+
         file_5m = CACHE_DIR / f"data_5m_{self.period}.parquet"
         file_daily = CACHE_DIR / f"data_daily_{self.period}.parquet"
 
@@ -177,8 +187,9 @@ class SectorMomentumBacktester:
         # ── 2. Sector Ranking at 09:30 ───────────────────────────────────────
         sector_ranks = []
         for sect_name, ticker in SECTOR_TICKERS.items():
-            sect_prev_close = self._get_daily_close(ticker, prev_date)
-            sect_today = self._get_ticker_day_data(ticker, current_date)
+            sym_key = sect_name if self.source == "zerodha" else ticker
+            sect_prev_close = self._get_daily_close(sym_key, prev_date)
+            sect_today = self._get_ticker_day_data(sym_key, current_date)
             if sect_prev_close is None or sect_today.empty:
                 continue
             sect_930 = sect_today[sect_today.index.time < time(9, 30)]
@@ -200,11 +211,12 @@ class SectorMomentumBacktester:
         # ── 3. Stock Scoring within Winning Sector ───────────────────────────
         stock_candidates = []
         for yf_tick, nse_sym in SECTOR_STOCKS.get(winning_sector, []):
-            stk_prev_close = self._get_daily_close(yf_tick, prev_date)
-            stk_pdh = self._get_daily_high(yf_tick, prev_date)
-            stk_pdl = self._get_daily_low(yf_tick, prev_date)
+            sym_key = nse_sym if self.source == "zerodha" else yf_tick
+            stk_prev_close = self._get_daily_close(sym_key, prev_date)
+            stk_pdh = self._get_daily_high(sym_key, prev_date)
+            stk_pdl = self._get_daily_low(sym_key, prev_date)
 
-            stk_today = self._get_ticker_day_data(yf_tick, current_date)
+            stk_today = self._get_ticker_day_data(sym_key, current_date)
             if stk_prev_close is None or stk_today.empty:
                 continue
 
@@ -219,7 +231,7 @@ class SectorMomentumBacktester:
             stk_orl15 = float(stk_930["Low"].min())
 
             stock_candidates.append({
-                "ticker": yf_tick,
+                "ticker": sym_key,
                 "nse_sym": nse_sym,
                 "return": stk_ret,
                 "volume": max(stk_vol_15m, 1.0),

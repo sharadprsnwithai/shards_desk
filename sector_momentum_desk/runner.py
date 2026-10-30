@@ -113,12 +113,12 @@ def run_live(dry_run: bool) -> None:
 
 # ── Backtest mode ─────────────────────────────────────────────────────────────
 
-def run_backtest(period: str = "1mo") -> None:
+def run_backtest(period: str = "6mo", source: str = "zerodha") -> None:
     """Run historical backtest over the specified period and print full results."""
     from sector_momentum_desk.backtester import SectorMomentumBacktester
 
-    logger.info(f"=== Sector Momentum Strategy — BACKTEST ({period}) ===")
-    bt = SectorMomentumBacktester(period=period)
+    logger.info(f"=== Sector Momentum Strategy — BACKTEST ({period}, source={source}) ===")
+    bt = SectorMomentumBacktester(period=period, source=source)
     bt.load_data()
     results = bt.run()
 
@@ -217,14 +217,16 @@ def main() -> None:
     parser.add_argument("--mode", choices=["live", "backtest"], required=True)
     parser.add_argument("--dry-run", action="store_true",
                         help="Skip Telegram alerts (live mode).")
-    parser.add_argument("--period", default="1mo",
-                        help="Backtest period (e.g. 1mo, 60d). Default is 1mo.")
+    parser.add_argument("--period", default="6mo",
+                        help="Backtest period (e.g. 1mo, 6mo). Default is 6mo.")
+    parser.add_argument("--source", choices=["zerodha", "yfinance"], default="zerodha",
+                        help="Data source: 'zerodha' (default, official Kite API) or 'yfinance'.")
     args = parser.parse_args()
 
     if args.mode == "live":
         run_live(dry_run=args.dry_run)
     else:
-        run_backtest(period=args.period)
+        run_backtest(period=args.period, source=args.source)
 
 
 if __name__ == "__main__":
