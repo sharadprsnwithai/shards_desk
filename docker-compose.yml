@@ -1,0 +1,51 @@
+services:
+  # Persistent background scheduler: runs automatically at 10:00 AM IST on weekdays
+  kronos-scheduler:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    image: ${DOCKER_USER:-sharadprsn}/kronos-trading-desk:latest
+    container_name: kronos_option_scheduler
+    restart: unless-stopped
+    env_file: .env
+    command: ["scheduler"]
+    volumes:
+      - hf_cache:/root/.cache/huggingface
+      - ./logs:/var/log
+    environment:
+      - TZ=Asia/Kolkata
+
+  # On-demand runner: 30-Day Monthly Positional Option Analysis
+  # Usage: docker compose run --rm kronos-monthly
+  kronos-monthly:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    image: ${DOCKER_USER:-sharadprsn}/kronos-trading-desk:latest
+    container_name: kronos_option_monthly
+    env_file: .env
+    command: ["monthly"]
+    volumes:
+      - hf_cache:/root/.cache/huggingface
+    environment:
+      - TZ=Asia/Kolkata
+
+  # On-demand runner: 10:00 AM Intraday Momentum & Option Analysis
+  # Usage: docker compose run --rm kronos-intraday
+  kronos-intraday:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    image: ${DOCKER_USER:-sharadprsn}/kronos-trading-desk:latest
+    container_name: kronos_option_intraday
+    env_file: .env
+    command: ["intraday"]
+    volumes:
+      - hf_cache:/root/.cache/huggingface
+    environment:
+      - TZ=Asia/Kolkata
+
+volumes:
+  # Named persistent volume so the ~400MB Kronos model is cached across container lifecycles
+  hf_cache:
+    name: kronos_hf_model_cache

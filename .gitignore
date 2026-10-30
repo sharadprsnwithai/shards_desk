@@ -1,0 +1,29 @@
+# Environment variables & secrets
+.env
+*.env
+!*.env.example
+
+# Cloned model libraries
+kronos_lib/
+
+# Python bytecode & caches
+__pycache__/
+*.py[cod]
+.pytest_cache/
+
+# Logs
+logs/
+*.log
+
+# Local data cache
+data_cache/
+*.parquet
+*.csv.cache
+
+# Model cache & safetensors
+*.bin
+*.pth
+*.pt
+*.safetensors
+!monthly_direction_engine/monthly_lstm_weights.pt
+!nifty_direction_engine/lstm_nifty_weights.pt

@@ -1,0 +1,16 @@
+torch>=2.0.0
+transformers>=4.40.0
+huggingface_hub>=0.20.0
+safetensors>=0.4.0
+kiteconnect>=5.0.0
+yfinance>=0.2.35
+pandas>=2.0.0
+numpy>=1.24.0
+scipy>=1.10.0
+requests>=2.31.0
+python-dotenv>=1.0.0
+pyyaml>=6.0
+pyotp>=2.9.0
+einops>=0.7.0
+tqdm>=4.66.0
+pytest>=8.0.0
