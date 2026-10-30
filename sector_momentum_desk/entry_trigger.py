@@ -246,11 +246,19 @@ class EntryTriggerEngine:
         Gate 4: structural breakout confirmed.
         BULLISH: candle High > PDH  AND  candle High > ORH15
         BEARISH: candle Low  < PDL  AND  candle Low  < ORL15
+
+        Returns False if PDH/PDL/ORH15/ORL15 are 0.0 (fetch failed — no level, no signal).
         """
         if bias == "BULLISH":
+            if candidate.pdh == 0.0 or candidate.orh15 == 0.0:
+                logger.debug(f"[EntryTrigger] Gate 4 SKIP: PDH/ORH15 unavailable for {candidate.symbol}")
+                return False
             price = float(latest_candle["high"])
             return price > candidate.pdh and price > candidate.orh15
         else:
+            if candidate.pdl == 0.0 or candidate.orl15 == 0.0:
+                logger.debug(f"[EntryTrigger] Gate 4 SKIP: PDL/ORL15 unavailable for {candidate.symbol}")
+                return False
             price = float(latest_candle["low"])
             return price < candidate.pdl and price < candidate.orl15
 
