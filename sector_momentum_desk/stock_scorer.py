@@ -55,23 +55,23 @@ class StockScorer:
                 "orl15":      orl15,
             })
 
-        # Normalise OI weights across all candidates
+        # Normalise volume proxy weights across all candidates
         total_vol = sum(r["vol"] for r in rows)
         if total_vol == 0:
-            oi_weight_fn = lambda r: 1.0 / len(rows)
+            volume_weight_fn = lambda r: 1.0 / len(rows)
         else:
-            oi_weight_fn = lambda r: r["vol"] / total_vol
+            volume_weight_fn = lambda r: r["vol"] / total_vol
 
         candidates: list[StockCandidate] = []
         for r in rows:
-            oi_w = oi_weight_fn(r)
-            score = r["ret"] * (1.0 + oi_w)
+            vw = volume_weight_fn(r)
+            score = r["ret"] * (1.0 + vw)
             candidates.append(StockCandidate(
                 symbol=r["yf_ticker"],
                 nse_symbol=r["nse_symbol"],
                 direction="LONG" if bias == "BULLISH" else "SHORT",
                 intraday_return=r["ret"],
-                oi_weight=oi_w,
+                volume_weight=vw,
                 score=score,
                 pdh=r["pdh"],
                 pdl=r["pdl"],

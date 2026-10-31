@@ -1,5 +1,5 @@
-"""
-Unit tests for sector_momentum_desk — all 18 tests, fully mocked (no live API calls).
+﻿"""
+Unit tests for sector_momentum_desk â€” all 18 tests, fully mocked (no live API calls).
 """
 import pandas as pd
 import numpy as np
@@ -35,7 +35,7 @@ def _make_bt(candles_5m: dict, daily: dict):
     return bt
 
 
-# ── Shared intraday tapes for a single test day ─────────────────────────────
+# â”€â”€ Shared intraday tapes for a single test day â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
 D2 = "2026-05-04"
 D1 = "2026-05-01"
 
@@ -156,7 +156,7 @@ def test_backtest_ema_is_per_day():
     assert t.exit_time == "10:20"
 
 
-# ─── Task 1: Config + Models ────────────────────────────────────────────────
+# â”€â”€â”€ Task 1: Config + Models â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
 
 def test_costs_and_slippage_reduce_pnl():
     """Round-trip costs (bps) + gated-entry slippage must hit the recorded PnL."""
@@ -193,7 +193,7 @@ def test_models_instantiate():
     )
     sc = StockCandidate(
         symbol="TCS.NS", nse_symbol="TCS", direction="LONG",
-        intraday_return=0.008, oi_weight=0.3, score=0.0104,
+        intraday_return=0.008, volume_weight=0.3, score=0.0104,
         pdh=4210.0, pdl=4100.0, orh15=4195.0, orl15=4110.0
     )
     assert sc.pdh == 4210.0
@@ -223,7 +223,7 @@ def test_models_instantiate():
     assert sig.structural_breakout is True
 
 
-# ─── Task 2: Nifty Bias Detector ────────────────────────────────────────────
+# â”€â”€â”€ Task 2: Nifty Bias Detector â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
 
 def test_bias_bullish():
     from sector_momentum_desk.engine import SectorMomentumEngine
@@ -261,7 +261,7 @@ def test_bias_neutral():
     assert bias == "NEUTRAL"
 
 
-# ─── Task 3: Sector Ranker ───────────────────────────────────────────────────
+# â”€â”€â”€ Task 3: Sector Ranker â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
 
 def test_sector_ranking_bullish():
     from sector_momentum_desk.sector_ranker import SectorRanker
@@ -296,7 +296,7 @@ def test_sector_ranking_bearish():
     assert ret == -0.006
 
 
-# ─── Task 4: Stock Scorer ────────────────────────────────────────────────────
+# â”€â”€â”€ Task 4: Stock Scorer â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
 
 def test_stock_scorer_top3():
     from sector_momentum_desk.stock_scorer import StockScorer
@@ -339,7 +339,7 @@ def test_stock_scorer_short3():
     assert all(c.direction == "SHORT" for c in result)
 
 
-def test_oi_weight_in_bounds():
+def test_volume_weight_in_bounds():
     from sector_momentum_desk.stock_scorer import StockScorer
 
     scorer = StockScorer()
@@ -351,10 +351,10 @@ def test_oi_weight_in_bounds():
                       side_effect=lambda t, d: mock_data.get(t, (0.0, 0))), \
          patch.object(scorer, "_fetch_levels", return_value=(0, 0, 0, 0)):
         result = scorer.score_and_select("IT", "BULLISH", datetime.now())
-    assert all(0 < c.oi_weight <= 1.0 for c in result)
+    assert all(0 < c.volume_weight <= 1.0 for c in result)
 
 
-# ─── Task 5: Engine Orchestrator ────────────────────────────────────────────
+# â”€â”€â”€ Task 5: Engine Orchestrator â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
 
 def test_selection_result_shape():
     from sector_momentum_desk.engine import SectorMomentumEngine
@@ -398,7 +398,7 @@ def test_neutral_returns_empty():
     assert result.top_3_stocks == []
 
 
-# ─── Task 6: Entry Trigger Engine ───────────────────────────────────────────
+# â”€â”€â”€ Task 6: Entry Trigger Engine â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
 
 def _make_candidate(direction="LONG", pdh=4200.0, pdl=4100.0,
                     orh15=4195.0, orl15=4110.0):
@@ -406,7 +406,7 @@ def _make_candidate(direction="LONG", pdh=4200.0, pdl=4100.0,
     return StockCandidate(
         symbol="TCS.NS", nse_symbol="TCS", direction=direction,
         intraday_return=0.01 if direction == "LONG" else -0.01,
-        oi_weight=0.3, score=0.013 if direction == "LONG" else -0.013,
+        volume_weight=0.3, score=0.013 if direction == "LONG" else -0.013,
         pdh=pdh, pdl=pdl, orh15=orh15, orl15=orl15,
     )
 
@@ -500,7 +500,7 @@ def test_pullback_replaced_by_lower_vol():
 
 
 def test_breakout_all_gates_pass():
-    """All 4 gates pass → EntrySignal emitted with correct entry_price and stop_loss."""
+    """All 4 gates pass â†’ EntrySignal emitted with correct entry_price and stop_loss."""
     from sector_momentum_desk.entry_trigger import EntryTriggerEngine
     from sector_momentum_desk.models import PullbackState
 
@@ -537,7 +537,7 @@ def test_breakout_all_gates_pass():
 
 
 def test_breakout_gate3_fail_nifty():
-    """Nifty candle is RED during BULLISH breakout → no signal."""
+    """Nifty candle is RED during BULLISH breakout â†’ no signal."""
     from sector_momentum_desk.entry_trigger import EntryTriggerEngine
     from sector_momentum_desk.models import PullbackState
 
@@ -564,11 +564,11 @@ def test_breakout_gate3_fail_nifty():
 
 
 def test_breakout_gate4_fail_structural():
-    """Price above PDH but below ORH15 → Gate 4 fails → no signal."""
+    """Price above PDH but below ORH15 â†’ Gate 4 fails â†’ no signal."""
     from sector_momentum_desk.entry_trigger import EntryTriggerEngine
     from sector_momentum_desk.models import PullbackState
 
-    # ORH15=4250, breakout high=4230 < 4250 → Gate 4 FAIL
+    # ORH15=4250, breakout high=4230 < 4250 â†’ Gate 4 FAIL
     candidate = _make_candidate("LONG", pdh=4200.0, orh15=4250.0)
     engine = EntryTriggerEngine([candidate], bias="BULLISH", dry_run=True)
 

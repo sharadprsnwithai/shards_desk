@@ -255,8 +255,8 @@ class SectorMomentumBacktester:
 
         total_vol = sum(c["volume"] for c in stock_candidates)
         for c in stock_candidates:
-            oi_w = c["volume"] / total_vol if total_vol > 0 else (1.0 / len(stock_candidates))
-            c["score"] = c["return"] * (1.0 + oi_w)
+            vw = c["volume"] / total_vol if total_vol > 0 else (1.0 / len(stock_candidates))
+            c["score"] = c["return"] * (1.0 + vw)
 
         if bias == "BULLISH":
             stock_candidates.sort(key=lambda x: x["score"], reverse=True)

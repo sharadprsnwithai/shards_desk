@@ -13,8 +13,8 @@ class StockCandidate:
     nse_symbol: str       # NSE trading symbol, e.g. "RELIANCE"
     direction: str        # "LONG" | "SHORT"
     intraday_return: float
-    oi_weight: float      # normalised volume proxy weight in [0, 1]
-    score: float          # intraday_return * (1 + oi_weight)
+    volume_weight: float  # normalised volume proxy weight in [0, 1]
+    score: float          # intraday_return * (1 + volume_weight)
     pdh: float            # Previous Day High
     pdl: float            # Previous Day Low
     orh15: float          # First-15-minute Opening Range High
