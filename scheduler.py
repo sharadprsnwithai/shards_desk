@@ -22,6 +22,12 @@ def is_last_day_of_month(d: date) -> bool:
     return tomorrow.day == 1
 
 
+# Maximum minutes past the scheduled trigger time we'll still execute.
+# If we restart AFTER this window, we skip the trigger rather than fire late.
+_ENTRY_WINDOW_MINUTES = 2   # 10:00 AM ± 2 min
+_EXIT_WINDOW_MINUTES  = 2   # 3:00  PM ± 2 min
+
+
 def check_scheduled_triggers(
     now_ist: datetime,
     state: dict,
@@ -37,14 +43,42 @@ def check_scheduled_triggers(
     2. Weekday 3:00 PM (15:00) -> Intraday Exit & PnL
     3. Last Day of Month 4:00 PM (16:00) -> Retrain Multi-Asset Monthly LSTM
     4. Last Day of Month 5:00 PM (17:00) -> 30-Day Monthly Positional Analysis
+
+    On restart the state dict is empty, so we use a missed-window guard:
+    if the scheduled time for today has already passed beyond the allowed window,
+    we mark it as done (skip) rather than execute a late/duplicate order.
     """
     today = now_ist.date()
     hour = now_ist.hour
     minute = now_ist.minute
     weekday = now_ist.weekday()  # 0=Mon, 4=Fri, 5=Sat, 6=Sun
 
-    # 1. 10:00 AM IST Weekday Intraday Entry (Mon-Fri)
-    if weekday < 5 and hour == 10 and minute == 0 and state.get("last_entry_date") != today:
+    # ── Missed-window guard on startup ──────────────────────────────────────
+    # If today's entry window (10:00 AM) has already passed and state has no
+    # record for today, mark it as already handled so we don't fire a late order.
+    if weekday < 5 and state.get("last_entry_date") != today:
+        entry_deadline_minute = 0 + _ENTRY_WINDOW_MINUTES
+        already_past_entry = (hour > 10) or (hour == 10 and minute > entry_deadline_minute)
+        if already_past_entry:
+            logger.info(
+                f"[Scheduler] Startup recovery: 10:00 AM entry window already passed "
+                f"({hour:02d}:{minute:02d} IST). Marking as done for today — no order fired."
+            )
+            state["last_entry_date"] = today
+
+    if weekday < 5 and state.get("last_exit_date") != today:
+        exit_deadline_minute = 0 + _EXIT_WINDOW_MINUTES
+        already_past_exit = (hour > 15) or (hour == 15 and minute > exit_deadline_minute)
+        if already_past_exit:
+            logger.info(
+                f"[Scheduler] Startup recovery: 3:00 PM exit window already passed "
+                f"({hour:02d}:{minute:02d} IST). Marking as done for today — no order fired."
+            )
+            state["last_exit_date"] = today
+    # ── End missed-window guard ──────────────────────────────────────────────
+
+    # 1. 10:00 AM IST Weekday Intraday Entry (Mon-Fri) — fires only within ±2 min window
+    if weekday < 5 and hour == 10 and minute <= _ENTRY_WINDOW_MINUTES and state.get("last_entry_date") != today:
         logger.info("[Scheduler] Triggering 10:00 AM 4-OTM Entry Signal & Telegram Alert...")
         if run_intraday_entry_fn:
             run_intraday_entry_fn(send_telegram=True)
@@ -61,8 +95,8 @@ def check_scheduled_triggers(
         except Exception as e:
             logger.warning(f"[Scheduler] Intraday SL/TP monitor error: {e}")
 
-    # 2. 3:00 PM (15:00) IST Weekday Intraday Exit & PnL (Mon-Fri)
-    if weekday < 5 and hour == 15 and minute == 0 and state.get("last_exit_date") != today:
+    # 2. 3:00 PM (15:00) IST Weekday Intraday Exit & PnL — fires only within ±2 min window
+    if weekday < 5 and hour == 15 and minute <= _EXIT_WINDOW_MINUTES and state.get("last_exit_date") != today:
         logger.info("[Scheduler] Triggering 3:00 PM Option Exit & PnL Alert...")
         if run_intraday_exit_fn:
             run_intraday_exit_fn(send_telegram=True)

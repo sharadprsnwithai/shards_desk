@@ -16,7 +16,8 @@ import time
 import logging
 from pathlib import Path
 from typing import Dict, Any, List, Optional
-from datetime import datetime
+from datetime import datetime, time as dtime
+import pytz
 import pandas as pd
 
 CUR_DIR = Path(__file__).resolve().parent
@@ -125,11 +126,33 @@ class ZerodhaOrderExecutor:
             logger.error(f"[Executor] Error fetching Kite margins: {e}")
             return False
 
+    # ── Trading hours guard ────────────────────────────────────────────────────
+
+    @staticmethod
+    def _is_market_hours() -> bool:
+        """
+        Returns True only when IST time is within NSE trading hours
+        (9:15 AM – 3:30 PM, Mon–Fri).  All automated order placement is
+        blocked outside this window to prevent accidental fills on restart.
+        """
+        IST = pytz.timezone("Asia/Kolkata")
+        now = datetime.now(IST)
+        if now.weekday() >= 5:          # Saturday / Sunday
+            return False
+        t = now.time()
+        return dtime(9, 15) <= t <= dtime(15, 30)
+
     def execute_entry(self, position_payload: Dict[str, Any]) -> Dict[str, Any]:
         """
         Executes 10:00 AM Entry orders for all legs in the position payload.
         Places SELL Market MIS orders (LIVE) or records simulated fills (PAPER).
         """
+        if not self._is_market_hours():
+            msg = "[Executor] ⛔ Order execution BLOCKED: outside NSE market hours (9:15 AM – 3:30 PM IST, Mon–Fri)."
+            logger.warning(msg)
+            send_telegram_message(f"⛔ <b>Order Blocked (Outside Market Hours):</b>\n{msg}")
+            return {"status": "OUTSIDE_MARKET_HOURS", "orders": []}
+
         legs = position_payload.get("legs", [])
         if not legs:
             logger.warning("[Executor] No legs provided in position payload.")
@@ -259,6 +282,13 @@ class ZerodhaOrderExecutor:
         Executes immediate market BUY order to square off a single leg when
         its 50% Stop-Loss or 80% Profit Target is triggered during market hours.
         """
+        if not self._is_market_hours():
+            logger.warning(
+                f"[Executor] ⛔ SL/TP exit BLOCKED for {leg.get('tradingsymbol', '?')}: "
+                "outside NSE market hours."
+            )
+            return {"status": "OUTSIDE_MARKET_HOURS"}
+
         tsym = leg.get("tradingsymbol", "")
         lot_size = self.get_nifty_lot_size()
         total_qty = leg.get("quantity", self.lots * lot_size)
@@ -333,6 +363,12 @@ class ZerodhaOrderExecutor:
         """
         Executes 3:00 PM square-off BUY orders for any legs that are still ACTIVE.
         """
+        if not self._is_market_hours():
+            logger.warning(
+                "[Executor] ⛔ EOD square-off BLOCKED: outside NSE market hours."
+            )
+            return {"status": "OUTSIDE_MARKET_HOURS", "closed_orders": []}
+
         legs = position.get("legs", [])
         lot_size = self.get_nifty_lot_size()
         total_qty = self.lots * lot_size
