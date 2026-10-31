@@ -371,7 +371,6 @@ class ZerodhaOrderExecutor:
 
         legs = position.get("legs", [])
         lot_size = self.get_nifty_lot_size()
-        total_qty = self.lots * lot_size
 
         closed_orders = []
 
@@ -384,13 +383,18 @@ class ZerodhaOrderExecutor:
             if not tsym:
                 continue
 
+            qty = leg.get("quantity")
+            if qty is None:
+                logger.error(f"[Executor] EOD squareoff: missing quantity on leg {tsym}. Skipping.")
+                continue
+
             order_record = {
                 "timestamp": datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
                 "mode": self.mode,
                 "action": "BUY",
                 "trigger_type": "3:00 PM EOD",
                 "tradingsymbol": tsym,
-                "quantity": leg.get("quantity", total_qty),
+                "quantity": qty,
                 "product": self.product,
                 "order_id": None,
                 "fill_price": float(leg.get("exit_premium", 0.0)),
@@ -460,6 +464,10 @@ class ZerodhaOrderExecutor:
 
         rows = []
         for leg in pos.get("legs", []):
+            tsym = leg.get("tradingsymbol") or ""
+            if not tsym:
+                logger.warning("[Executor] Skipping ledger entry for leg with missing tradingsymbol.")
+                continue
             entry_p = float(leg.get("entry_premium", 0.0))
             exit_p = float(leg.get("exit_premium", 0.0))
             pts = float(leg.get("points_gained", entry_p - exit_p))
@@ -469,7 +477,7 @@ class ZerodhaOrderExecutor:
             rows.append({
                 "date": date_str,
                 "mode": self.mode,
-                "tradingsymbol": leg.get("tradingsymbol", ""),
+                "tradingsymbol": tsym,
                 "action": leg.get("action", "SELL"),
                 "strike": leg.get("strike", 0),
                 "type": leg.get("type", "CE"),
