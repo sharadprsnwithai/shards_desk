@@ -3,7 +3,7 @@ import sys
 import json
 import logging
 from pathlib import Path
-from typing import List, Dict, Any, Optional
+from typing import List, Dict, Any, Optional, Tuple
 from datetime import datetime, date
 import pandas as pd
 import numpy as np
@@ -59,10 +59,14 @@ def clear_active_position():
             pass
 
 
-def _hedge_leg(sold_strike: int, opt_type: str, quote_fn) -> Dict[str, Any]:
-    """Updated-margin-saver wing for a sold leg: BUY, sold strike +150 (CE) / -150 (PE)."""
+def _hedge_leg(sold_strike: int, opt_type: str, quote_fn) -> Optional[Dict[str, Any]]:
+    """Margin-saver wing for a sold leg: BUY, sold strike +150 (CE) / -150 (PE).
+    Returns None when the wing quote is unavailable (main leg then skipped too)."""
     wing_strike = sold_strike + 150 if opt_type == "CE" else sold_strike - 150
-    tsym, ltp = quote_fn(wing_strike, opt_type)
+    q = quote_fn(wing_strike, opt_type)
+    if q is None:
+        return None
+    tsym, ltp = q
     return {
         "action": "BUY",
         "strike": wing_strike,
@@ -79,58 +83,45 @@ def build_legs(bias: str, atm_strike: int, quote_fn) -> List[Dict[str, Any]]:
     Strategy: 4-OTM (200-pt) sold leg(s) to SELL, each protected by a BUY hedge
     wing 150 pts beyond the sold strike. SIDEWAYS strangles both sides.
     quote_fn(strike, opt_type) -> (tradingsymbol, ltp).
+    A sold leg is never shipped without a valid quote for it AND for its wing —
+    a dead quote would otherwise reach the executor stop-less / naked.
     """
-    legs: List[Dict[str, Any]] = []
+    def quoted(strike: int, opt_type: str):
+        tsym, ltp = quote_fn(strike, opt_type)
+        return None if (tsym is None or ltp <= 0.0) else (tsym, ltp)
 
+    sold_specs: List[Tuple[int, str, str]] = []
     if bias == "BEARISH":
-        sold = atm_strike + OTM_DISTANCE
-        tsym, ltp = quote_fn(sold, "CE")
-        legs.append({
-            "action": "SELL", "strike": sold, "type": "CE",
-            "tradingsymbol": tsym,
-            "entry_premium": ltp,
-            "sl_premium": round(ltp * 1.50, 1) if ltp > 0 else 0.0,
-            "target_premium": round(ltp * 0.20, 1) if ltp > 0 else 0.0,
-            "desc": "4-OTM Resistance Ceiling (+200 pts)"
-        })
-        legs.append(_hedge_leg(sold, "CE", quote_fn))
-
+        sold_specs = [(atm_strike + OTM_DISTANCE, "CE", "4-OTM Resistance Ceiling (+200 pts)")]
     elif bias == "BULLISH":
-        sold = atm_strike - OTM_DISTANCE
-        tsym, ltp = quote_fn(sold, "PE")
-        legs.append({
-            "action": "SELL", "strike": sold, "type": "PE",
+        sold_specs = [(atm_strike - OTM_DISTANCE, "PE", "4-OTM Support Floor (-200 pts)")]
+    else:  # SIDEWAYS / NO_TRADE -> 4-OTM Strangle with wings both sides
+        sold_specs = [
+            (atm_strike + OTM_DISTANCE, "CE", "4-OTM Call Leg (+200 pts)"),
+            (atm_strike - OTM_DISTANCE, "PE", "4-OTM Put Leg (-200 pts)"),
+        ]
+
+    legs: List[Dict[str, Any]] = []
+    for sold, opt_type, desc in sold_specs:
+        main_q = quoted(sold, opt_type)
+        if main_q is None:
+            logger.warning(f"[DailyEngine] No usable quote for {sold} {opt_type} — leg skipped.")
+            continue
+        tsym, ltp = main_q
+        main_q_leg = {
+            "action": "SELL", "strike": sold, "type": opt_type,
             "tradingsymbol": tsym,
             "entry_premium": ltp,
-            "sl_premium": round(ltp * 1.50, 1) if ltp > 0 else 0.0,
-            "target_premium": round(ltp * 0.20, 1) if ltp > 0 else 0.0,
-            "desc": "4-OTM Support Floor (-200 pts)"
-        })
-        legs.append(_hedge_leg(sold, "PE", quote_fn))
-
-    else:  # SIDEWAYS / NO_TRADE -> 4-OTM Strangle with wings both sides
-        ce_sold = atm_strike + OTM_DISTANCE
-        pe_sold = atm_strike - OTM_DISTANCE
-        ce_sym, ce_ltp = quote_fn(ce_sold, "CE")
-        pe_sym, pe_ltp = quote_fn(pe_sold, "PE")
-        legs.append({
-            "action": "SELL", "strike": ce_sold, "type": "CE",
-            "tradingsymbol": ce_sym,
-            "entry_premium": ce_ltp,
-            "sl_premium": round(ce_ltp * 1.50, 1) if ce_ltp > 0 else 0.0,
-            "target_premium": round(ce_ltp * 0.20, 1) if ce_ltp > 0 else 0.0,
-            "desc": "4-OTM Call Leg (+200 pts)"
-        })
-        legs.append(_hedge_leg(ce_sold, "CE", quote_fn))
-        legs.append({
-            "action": "SELL", "strike": pe_sold, "type": "PE",
-            "tradingsymbol": pe_sym,
-            "entry_premium": pe_ltp,
-            "sl_premium": round(pe_ltp * 1.50, 1) if pe_ltp > 0 else 0.0,
-            "target_premium": round(pe_ltp * 0.20, 1) if pe_ltp > 0 else 0.0,
-            "desc": "4-OTM Put Leg (-200 pts)"
-        })
-        legs.append(_hedge_leg(pe_sold, "PE", quote_fn))
+            "sl_premium": round(ltp * 1.50, 1),
+            "target_premium": round(ltp * 0.20, 1),
+            "desc": desc
+        }
+        wing = _hedge_leg(sold, opt_type, quoted)
+        if wing is None:
+            logger.warning(f"[DailyEngine] Hedge wing quote failed for {sold} {opt_type} — leg skipped (no naked legs).")
+            continue
+        legs.append(main_q_leg)
+        legs.append(wing)
 
     return legs
 
@@ -196,6 +187,11 @@ def run_intraday_entry(send_telegram: bool = True) -> Dict[str, Any]:
             dp.kite, strike, opt_type, target_tuesday
         ),
     )
+    if not legs:
+        logger.error("[DailyEngine] No valid option quotes — entry aborted.")
+        if send_telegram:
+            send_telegram_message("⚠️ <b>Entry Aborted (No Option Quotes)</b>")
+        return {}
     sold_desc = " & ".join(
         f"{l['strike']} {l['type']}" for l in legs if l["action"] == "SELL"
     )

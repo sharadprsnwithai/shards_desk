@@ -61,6 +61,27 @@ def test_event_day_places_no_trade(tmp_path, monkeypatch):
     assert not daily_engine.ACTIVE_POSITION_FILE.exists()
 
 
+def test_build_legs_zero_quote_legs_and_entry_abort(tmp_path, monkeypatch):
+    # quote_fn returning (None, 0.0) like a failed Kite quote -> no leg built at all
+    assert daily_engine.build_legs("BULLISH", 24000, lambda s, t: (None, 0.0)) == []
+
+    # full entry aborts: no position file, empty payload
+    daily_engine.ACTIVE_POSITION_FILE = tmp_path / "pos.json"
+    dummy_df = pd.DataFrame({
+        'timestamps': pd.date_range("2026-10-31 09:15", periods=40, freq='5min'),
+        'open': np.linspace(24800, 24850, 40),
+        'high': np.linspace(24810, 24860, 40),
+        'low': np.linspace(24790, 24840, 40),
+        'close': np.linspace(24800, 24850, 40),
+        'volume': [50000] * 40
+    })
+    monkeypatch.setattr(daily_engine.DataProvider, "fetch_intraday_5m", MagicMock(return_value=dummy_df))
+    monkeypatch.setattr(daily_engine, "get_nifty_option_symbol_and_quote",
+                        lambda k, s, t, e: (None, 0.0))
+    assert daily_engine.run_intraday_entry(send_telegram=False) == {}
+    assert not daily_engine.ACTIVE_POSITION_FILE.exists()
+
+
 def test_daily_intraday_nifty_setup():
 
     assert daily_engine.NIFTY_SYMBOL == "^NSEI"
