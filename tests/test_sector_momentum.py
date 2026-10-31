@@ -6,6 +6,154 @@ import numpy as np
 from datetime import datetime
 from unittest.mock import patch, MagicMock
 import pytest
+import pandas as pd
+import numpy as np
+
+import sector_momentum_desk.config as mom_config
+
+
+def _candle_frame(rows, tz_naive=True):
+    df = pd.DataFrame(rows, columns=["ts", "Open", "High", "Low", "Close", "Volume"])
+    df["ts"] = pd.to_datetime(df["ts"])
+    df = df.set_index("ts")
+    df.index = df.index.set_names(["Timestamp"])
+    return df
+
+def _wide(per_ticker: dict, daily=False):
+    """Build a multi-index frame shaped like yfinance.download output (field, ticker)."""
+    outer = pd.concat(per_ticker.values(), axis=1, keys=list(per_ticker.keys()))
+    outer.columns = outer.columns.swaplevel(0, 1)
+    return outer.sort_index(axis=1)
+
+def _make_bt(candles_5m: dict, daily: dict):
+    from sector_momentum_desk.backtester import SectorMomentumBacktester
+    bt = SectorMomentumBacktester(period="6mo", source="zerodha")
+    bt.df_5m = _wide({t: _candle_frame(rows) for t, rows in candles_5m.items()})
+    bt.df_daily = _wide({t: _candle_frame(rows) for t, rows in daily.items()})
+    bt.df_5m.index = pd.to_datetime(bt.df_5m.index)
+    bt.df_daily.index = pd.to_datetime(bt.df_daily.index)
+    return bt
+
+
+# ── Shared intraday tapes for a single test day ─────────────────────────────
+D2 = "2026-05-04"
+D1 = "2026-05-01"
+
+def _ts(day, hh, mm):
+    return pd.Timestamp(f"{day} {hh:02d}:{mm:02d}:00")
+
+MOMENT_INCREMENTS = [(_ts(D2, 9, 15 + m * 5 if m < 9 else 9 + (m - 3) * 5,)) for m in range(0, 1)]
+
+
+def _day_times(day, n=10):
+    return [(_ts(day, 9, 15 + i * 5)) for i in range(3)] + [(_ts(day, 9, 30 + i * 5)) for i in range(n - 3)]
+
+def _nifty_day2_green():
+    """3 pre-930 candles biasing BULLISH (+0.24%), then green candles to 10:20."""
+    out = []
+    for i, (hh, mm) in enumerate([(9, 15), (9, 20), (9, 25)]):
+        c = 24900 + 20 * (i + 1)
+        out.append(((_ts(D2, hh, mm)), c - 20, c, c - 25, c, 1000))
+    for i in range(4):
+        c = 24980 + 20 * (i + 1)
+        out.append(((_ts(D2, 9, 30 + i * 5)), c - 20, c, c - 25, c, 1000))
+    return out
+
+def _bank_day2():
+    """Sector ranking tape: +0.5% by 09:25 close."""
+    out = []
+    for i, (hh, mm) in enumerate([(9, 15), (9, 20), (9, 25)]):
+        c = 2000 + 4 * (i + 1)
+        out.append(((_ts(D2, hh, mm)), c - 4, c, c - 5, c, 1000))
+    return out
+
+
+def _hdfc_volume_tape_day2():
+    """HDFC: 09:15 candle huge volume, 09:20/09:25 tiny -> old sum-weights dominate,
+    new last-candle weight makes ICICI win. Prices: ret +1.0% by 09:25."""
+    out = []
+    for i, v in enumerate([50000, 1, 1]):
+        hh, mm = [(9, 15), (9, 20), (9, 25)][i]
+        c = 1005 + 2 * (i + 1)   # 1007, 1009, 1011 -> +1.1% vs 1000
+        out.append((_ts(D2, hh, mm), c - 2, c, c - 3, c, v))
+    return out
+
+def _icici_volume_tape_day2():
+    """ICICI: steady volume 100 -> last-candle weight 100; ret +0.8% by 09:25."""
+    out = []
+    for i, (hh, mm) in enumerate([(9, 15), (9, 20), (9, 25)]):
+        c = 1002 + 2 * (i + 1)   # 1004, 1006, 1008 -> +0.8%
+        out.append((_ts(D2, hh, mm), c - 2, c, c - 3, c, 100))
+    return out
+
+
+def test_backtest_volume_weight_matches_live():
+    """Candidate weight must use the last 5m candle before 09:30 (like live at 09:30),
+    not the 15-minute volume sum the old backtest used."""
+    candles = {
+        "^NSEI": _nifty_day2_green(),
+        "Bank": _bank_day2(),
+        "HDFCBANK": _hdfc_volume_tape_day2(),
+        "ICICIBANK": _icici_volume_tape_day2(),
+    }
+    daily = {
+        "HDFCBANK": [(_ts(D1, 9, 15), 1000, 1000, 990, 1000, 0)],
+        "ICICIBANK": [(_ts(D1, 9, 15), 1000, 1000, 990, 1000, 0)],
+        "Bank": [(_ts(D1, 9, 15), 2000, 2010, 1990, 2000, 0)],
+    }
+    bt = _make_bt(candles, daily)
+    res = bt._backtest_single_day(pd.Timestamp(D2).date(), pd.Timestamp(D1).date())
+    assert res.nifty_bias == "BULLISH"
+    assert res.winning_sector == "Bank"
+    # Old logic (15m volume sum): HDFCBANK tops; New logic (last candle): ICICIBANK tops
+    assert res.top_stocks[0] == "ICICIBANK"
+
+
+def _hdfc_trail_tape():
+    """Day1 flat series (seeds the OLD continuous EMA). Day2 inside the 09:30+ session:
+    red pullback 09:30, breakout 09:35, rising closes to 10:15, crossover 10:20."""
+    day1 = []
+    for hh, mm in [(9, 15), (9, 20), (9, 25), (9, 30), (9, 35), (9, 40), (9, 45), (9, 50), (9, 55)]:
+        day1.append((_ts(D1, hh, mm), 100, 100, 100, 100, 1))
+    day2 = [
+        (_ts(D2, 9, 15), 505, 505, 503, 503, 1),
+        (_ts(D2, 9, 20), 504, 506, 503, 506, 10),
+        (_ts(D2, 9, 25), 506, 507, 503, 504, 5),
+        (_ts(D2, 9, 30), 505, 505, 502, 503, 1),    # red pullback (lowest volume, in-session)
+        (_ts(D2, 9, 35), 508, 530, 506, 528, 100),  # breakout: PDH+ORH15 breach
+    ]
+    c = 536
+    for i in range(8):  # 09:40 .. 10:15 rising
+        hh, mm = (9, 40 + i * 5) if i < 4 else (10, (i - 4) * 5)
+        day2.append((_ts(D2, hh, mm), c - 8, c + 2, c - 10, c, 10))
+        c += 8
+    day2.append((_ts(D2, 10, 20), 592, 610, 505, 505, 10))  # trail crossover candle
+    return day1 + day2
+
+
+def test_backtest_ema_is_per_day():
+    """10-EMA trail must be computed on the trading day's candles only (live parity),
+    not over the continuous multi-month series (overnight carry-in)."""
+    candles = {
+        "^NSEI": _nifty_day2_green() + [((_ts(D1, 9, 15)), 100, 100, 100, 100, 1)],
+        "Bank": _bank_day2() + [((_ts(D1, 9, 15)), 100, 100, 100, 100, 1)],
+        "HDFCBANK": _hdfc_trail_tape(),
+    }
+    daily = {
+        "HDFCBANK": [(_ts(D1, 9, 15), 500, 500, 480, 500, 0)],
+        "Bank": [(_ts(D1, 9, 15), 2000, 2010, 1990, 2000, 0)],
+    }
+    bt = _make_bt(candles, daily)
+    res = bt._backtest_single_day(pd.Timestamp(D2).date(), pd.Timestamp(D1).date())
+    assert res.nifty_bias == "BULLISH"
+    trades = res.trades
+    assert len(trades) == 1
+    t = trades[0]
+    assert t.direction == "LONG"
+    # Whole-series EMA (old) stays far below price for the whole rising run ->
+    # old code rides to the square-off; per-day EMA exits on the 10:20 crossover.
+    assert t.exit_reason == "10_EMA_TRAIL"
+    assert t.exit_time == "10:20"
 
 
 # ─── Task 1: Config + Models ────────────────────────────────────────────────

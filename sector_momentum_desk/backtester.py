@@ -1,4 +1,4 @@
-"""
+﻿"""
 sector_momentum_desk/backtester.py
 1-Month Historical Backtesting Engine for the Sector Momentum Strategy.
 
@@ -74,7 +74,6 @@ class SectorMomentumBacktester:
         self.source = source
         self.df_5m: Optional[pd.DataFrame] = None
         self.df_daily: Optional[pd.DataFrame] = None
-        self.df_ema10: Optional[pd.DataFrame] = None
         self._all_tickers = (
             ["^NSEI"]
             + list(SECTOR_TICKERS.values())
@@ -87,7 +86,6 @@ class SectorMomentumBacktester:
             from sector_momentum_desk.zerodha_data import fetch_and_cache_zerodha_data
             days = 180 if self.period in ("6mo", "180d") else 30
             self.df_5m, self.df_daily = fetch_and_cache_zerodha_data(days=days, force=force_download)
-            self.df_ema10 = self.df_5m["Close"].ewm(span=EMA_TRAIL_PERIOD, adjust=False).mean()
             logger.info(f"[ZerodhaBacktest] Loaded 5m shape: {self.df_5m.shape}, daily shape: {self.df_daily.shape}")
             return
 
@@ -98,7 +96,6 @@ class SectorMomentumBacktester:
             logger.info("Loading backtest data from local parquet cache...")
             self.df_5m = pd.read_parquet(file_5m)
             self.df_daily = pd.read_parquet(file_daily)
-            self.df_ema10 = self.df_5m["Close"].ewm(span=EMA_TRAIL_PERIOD, adjust=False).mean()
             logger.info(f"Loaded 5m shape: {self.df_5m.shape}, daily shape: {self.df_daily.shape}")
             return
 
@@ -124,7 +121,6 @@ class SectorMomentumBacktester:
 
         self.df_5m = df_5m
         self.df_daily = df_daily
-        self.df_ema10 = self.df_5m["Close"].ewm(span=EMA_TRAIL_PERIOD, adjust=False).mean()
         logger.info(f"Cached backtest data to {CACHE_DIR}")
 
     def run(self) -> list[DayResult]:
@@ -158,7 +154,7 @@ class SectorMomentumBacktester:
         """Simulates Phase 1 and Phase 2 for a single trading day."""
         date_str = current_date.strftime("%Y-%m-%d")
 
-        # ── 1. Nifty 50 Direction Check at 09:30 ─────────────────────────────
+        # â”€â”€ 1. Nifty 50 Direction Check at 09:30 â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
         # Get today's 5m candles for ^NSEI
         nifty_today = self._get_ticker_day_data("^NSEI", current_date)
         if nifty_today.empty or len(nifty_today) < 3:
@@ -184,7 +180,7 @@ class SectorMomentumBacktester:
             return DayResult(date=date_str, nifty_bias="NEUTRAL", nifty_return=nifty_ret,
                              winning_sector="", sector_return=0.0, top_stocks=[])
 
-        # ── 2. Sector Ranking at 09:30 ───────────────────────────────────────
+        # â”€â”€ 2. Sector Ranking at 09:30 â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
         sector_ranks = []
         for sect_name, ticker in SECTOR_TICKERS.items():
             sym_key = sect_name if self.source == "zerodha" else ticker
@@ -208,7 +204,7 @@ class SectorMomentumBacktester:
         winning_sector = winning_sector_entry["sector"]
         winning_sector_ret = winning_sector_entry["return"]
 
-        # ── 3. Stock Scoring within Winning Sector ───────────────────────────
+        # â”€â”€ 3. Stock Scoring within Winning Sector â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
         stock_candidates = []
         for yf_tick, nse_sym in SECTOR_STOCKS.get(winning_sector, []):
             sym_key = nse_sym if self.source == "zerodha" else yf_tick
@@ -225,7 +221,7 @@ class SectorMomentumBacktester:
                 continue
 
             stk_price_930 = float(stk_930["Close"].iloc[-1])
-            stk_vol_15m = float(stk_930["Volume"].sum())
+            stk_vol_930 = float(stk_930["Volume"].iloc[-1])
             stk_ret = (stk_price_930 - stk_prev_close) / stk_prev_close
             stk_orh15 = float(stk_930["High"].max())
             stk_orl15 = float(stk_930["Low"].min())
@@ -234,7 +230,7 @@ class SectorMomentumBacktester:
                 "ticker": sym_key,
                 "nse_sym": nse_sym,
                 "return": stk_ret,
-                "volume": max(stk_vol_15m, 1.0),
+                "volume": max(stk_vol_930, 1.0),
                 "pdh": stk_pdh or 0.0,
                 "pdl": stk_pdl or 0.0,
                 "orh15": stk_orh15,
@@ -259,7 +255,7 @@ class SectorMomentumBacktester:
         top_stocks = stock_candidates[:NUM_TOP_STOCKS]
         top_symbols = [c["nse_sym"] for c in top_stocks]
 
-        # ── 4. Phase 2: Candle-by-Candle Simulation (09:30 to 15:15) ─────────
+        # â”€â”€ 4. Phase 2: Candle-by-Candle Simulation (09:30 to 15:15) â”€â”€â”€â”€â”€â”€â”€â”€â”€
         trades: list[Trade] = []
 
         for stock in top_stocks:
@@ -308,6 +304,13 @@ class SectorMomentumBacktester:
         pullback_candle = None
         current_min_vol = float("inf")
 
+        # Per-session 10-EMA (live parity: entry_trigger computes the trail EMA on
+        # the trading day's candles only, never across the overnight gap)
+        ema10_series = (
+            session_candles["Close"].ewm(span=EMA_TRAIL_PERIOD, adjust=False).mean()
+            if USE_EMA_TRAILING else None
+        )
+
         in_trade = False
         entry_price = 0.0
         stop_loss = 0.0
@@ -325,7 +328,7 @@ class SectorMomentumBacktester:
             c_vol = float(c["Volume"])
 
             if not in_trade:
-                # ── Gate 1: Check if candle is opposite direction & lowest volume ──
+                # â”€â”€ Gate 1: Check if candle is opposite direction & lowest volume â”€â”€
                 is_opposite = (c_close < c_open) if bias == "BULLISH" else (c_close > c_open)
                 if is_opposite and c_vol < current_min_vol:
                     pullback_candle = {
@@ -336,7 +339,7 @@ class SectorMomentumBacktester:
                     }
                     current_min_vol = c_vol
 
-                # ── Gate 2: Breakout of existing pullback candle ───────────
+                # â”€â”€ Gate 2: Breakout of existing pullback candle â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
                 if pullback_candle is not None and c_ts > pullback_candle["ts"]:
                     breakout_fired = (
                         c_high > pullback_candle["high"]
@@ -344,7 +347,7 @@ class SectorMomentumBacktester:
                         else c_low < pullback_candle["low"]
                     )
                     if breakout_fired:
-                        # ── Gate 3: Nifty Realignment Check ────────────────
+                        # â”€â”€ Gate 3: Nifty Realignment Check â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
                         if c_ts in nifty_today.index:
                             nifty_c = nifty_today.loc[c_ts]
                             nifty_open = float(nifty_c["Open"])
@@ -360,7 +363,7 @@ class SectorMomentumBacktester:
                         if not nifty_aligned:
                             continue
 
-                        # ── Gate 4: Structural Breakout Check ───────────────
+                        # â”€â”€ Gate 4: Structural Breakout Check â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
                         if bias == "BULLISH":
                             structural_pass = (
                                 pdh > 0 and orh15 > 0 and c_high > pdh and c_high > orh15
@@ -373,7 +376,7 @@ class SectorMomentumBacktester:
                         if not structural_pass:
                             continue
 
-                        # ── ALL 4 GATES PASSED: ENTER TRADE ────────────────
+                        # â”€â”€ ALL 4 GATES PASSED: ENTER TRADE â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
                         in_trade = True
                         entry_ts = c_ts
                         entry_time_str = c_ts.strftime("%H:%M")
@@ -384,7 +387,7 @@ class SectorMomentumBacktester:
                             entry_price = pullback_candle["low"]
                             stop_loss = pullback_candle["high"] * (1.0 + SL_BUFFER)
 
-            # ── If in trade, check exit conditions ───────────────────────────
+            # â”€â”€ If in trade, check exit conditions â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
             if in_trade:
                 # 1. Check Hard Stop Loss hit
                 sl_hit = (c_low <= stop_loss) if bias == "BULLISH" else (c_high >= stop_loss)
@@ -413,14 +416,11 @@ class SectorMomentumBacktester:
                     )
 
                 # 2. Check Dynamic 10 EMA Trailing Exit (on candles after entry)
-                if USE_EMA_TRAILING and entry_ts is not None and c_ts > entry_ts:
+                if USE_EMA_TRAILING and entry_ts is not None and c_ts > entry_ts and ema10_series is not None:
                     ema_val = None
-                    if (
-                        self.df_ema10 is not None
-                        and ticker in self.df_ema10.columns
-                        and c_ts in self.df_ema10.index
-                    ):
-                        ema_val = float(self.df_ema10.loc[c_ts, ticker])
+                    loc = ema10_series.index.get_loc(c_ts)
+                    if loc + 1 >= EMA_TRAIL_PERIOD:   # live guard: len(candles) >= period
+                        ema_val = float(ema10_series.iloc[loc])
 
                     if ema_val is not None:
                         ema_trail_triggered = (
@@ -477,7 +477,7 @@ class SectorMomentumBacktester:
 
         return None
 
-    # ── Helpers for slicing multi-index DataFrames ─────────────────────────────
+    # â”€â”€ Helpers for slicing multi-index DataFrames â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
 
     def _get_ticker_day_data(self, ticker: str, date_obj) -> pd.DataFrame:
         """Extracts today's 5m candles for a specific ticker."""
