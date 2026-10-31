@@ -52,6 +52,15 @@ def test_monitor_skips_buy_legs(tmp_path, monkeypatch):
     assert reloaded["legs"][0]["status"] == "ACTIVE"   # BUY leg must never be SL/TP-monitored
 
 
+def test_event_day_places_no_trade(tmp_path, monkeypatch):
+    daily_engine.ACTIVE_POSITION_FILE = tmp_path / "pos.json"
+    monkeypatch.setattr(daily_engine, "check_event_risk", lambda: "RBI Policy")
+    monkeypatch.setattr(daily_engine.DataProvider, "fetch_intraday_5m",
+                        MagicMock(side_effect=AssertionError("must not fetch data on event day")))
+    assert daily_engine.run_intraday_entry(send_telegram=False) == {}
+    assert not daily_engine.ACTIVE_POSITION_FILE.exists()
+
+
 def test_daily_intraday_nifty_setup():
 
     assert daily_engine.NIFTY_SYMBOL == "^NSEI"

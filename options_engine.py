@@ -171,7 +171,7 @@ def determine_intraday_option_strategy(
 ) -> Dict[str, Any]:
     """
     Determines 10:00 AM same-day option selling setups using the NIFTY 4-OTM (200-pt buffer) rule.
-    - Strike Distance: 4 strikes OTM = 200 points away from spot (83.3% historical win rate).
+    - Strike Distance: 4 strikes OTM = 200 points away from spot.
     - Profit Booking: 80% premium decay.
     - Stop-Loss: 50% premium expansion.
     """

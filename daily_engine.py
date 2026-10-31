@@ -155,7 +155,9 @@ def run_intraday_entry(send_telegram: bool = True) -> Dict[str, Any]:
 
     event_note = check_event_risk()
     if event_note:
-        print(f"  ⚠️  HIGH IMPACT EVENT TODAY: {event_note}\n")
+        print(f"  ⚠️  HIGH IMPACT EVENT TODAY: {event_note} — desk is NO-TRADE.")
+        # Event days bypass the hybrid signal entirely by policy
+        return {}
 
     dp = DataProvider()
     engine = HybridSignalEngine(use_kronos=True, use_lstm=True)
