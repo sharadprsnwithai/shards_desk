@@ -146,7 +146,7 @@ class DataProvider:
             return KITE_INSTRUMENT_MAP[symbol]["token"]
         return None
 
-    def fetch_daily(self, symbol: str, days: int = 180, use_cache: bool = True) -> pd.DataFrame:
+    def fetch_daily(self, symbol: str, days: int = 180, use_cache: bool = True, allow_synthetic: bool = False) -> pd.DataFrame:
         """
         Fetches daily completed candles. Checks high-speed local disk cache first (fresh for 6 hours).
         If Kite session expires, retries re-login up to 5 times before falling back to yfinance.
@@ -206,10 +206,14 @@ class DataProvider:
         except Exception as e:
             logger.warning(f"[DataProvider] yfinance fetch failed for {symbol}: {e}")
 
-        # Synthetic fallback for testing
-        return self._generate_synthetic_daily(symbol, count=days)
+        # Synthetic fallback
+        if allow_synthetic:
+            return self._generate_synthetic_daily(symbol, count=days)
+        raise RuntimeError(
+            f"No market data available for {symbol}: Kite and yfinance both failed."
+        )
 
-    def fetch_intraday_5m(self, symbol: str, days: int = 5, use_cache: bool = True) -> pd.DataFrame:
+    def fetch_intraday_5m(self, symbol: str, days: int = 5, use_cache: bool = True, allow_synthetic: bool = False) -> pd.DataFrame:
         """
         Fetches 5-minute candles up to current moment. Checks high-speed local disk cache first (fresh for 15 mins).
         Retries re-login up to 5 times on session expiration before falling back to yfinance.
@@ -269,7 +273,11 @@ class DataProvider:
             logger.warning(f"[DataProvider] yfinance 5m fetch failed for {symbol}: {e}")
 
         # Synthetic fallback
-        return self._generate_synthetic_5m(symbol, count=120)
+        if allow_synthetic:
+            return self._generate_synthetic_5m(symbol, count=120)
+        raise RuntimeError(
+            f"No market data available for {symbol}: Kite and yfinance both failed."
+        )
 
     def _generate_synthetic_daily(self, symbol: str, count: int = 120) -> pd.DataFrame:
         base_price = 24000.0 if "NSEI" in symbol else (1500.0 if "RELIANCE" in symbol or "HDFC" in symbol else 4000.0)

@@ -85,3 +85,33 @@ def test_relogin_succeeds_on_retry(monkeypatch):
     assert len(df) == 1
     assert float(df["close"].iloc[0]) == 24050
 
+
+
+def test_fetch_daily_raises_when_both_sources_fail_and_synthetic_disabled():
+    from unittest.mock import patch
+    dp = DataProvider(kite_api_key=None, kite_access_token=None)
+    dp.kite = None
+    with patch("data_provider.yf.Ticker") as mock_yf:
+        mock_yf.return_value.history.return_value = pd.DataFrame()
+        with pytest.raises(RuntimeError, match="No market data available"):
+            dp.fetch_daily("^NSEI", days=30, use_cache=False, allow_synthetic=False)
+
+
+def test_fetch_daily_returns_synthetic_when_explicitly_allowed():
+    from unittest.mock import patch
+    dp = DataProvider(kite_api_key=None, kite_access_token=None)
+    dp.kite = None
+    with patch("data_provider.yf.Ticker") as mock_yf:
+        mock_yf.return_value.history.return_value = pd.DataFrame()
+        result = dp.fetch_daily("^NSEI", days=30, use_cache=False, allow_synthetic=True)
+    assert len(result) > 0
+
+
+def test_fetch_intraday_5m_raises_when_both_fail():
+    from unittest.mock import patch
+    dp = DataProvider(kite_api_key=None, kite_access_token=None)
+    dp.kite = None
+    with patch("data_provider.yf.Ticker") as mock_yf:
+        mock_yf.return_value.history.return_value = pd.DataFrame()
+        with pytest.raises(RuntimeError, match="No market data available"):
+            dp.fetch_intraday_5m("^NSEI", days=3, use_cache=False, allow_synthetic=False)

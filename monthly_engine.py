@@ -43,20 +43,9 @@ MONTHLY_ASSETS = [
 
 
 class FallbackPredictor:
-    """Fallback predictor if Kronos library or model weights are unavailable."""
-    def predict(self, df: pd.DataFrame, x_timestamp: pd.Series, y_timestamp: pd.Series, pred_len: int, **kwargs):
-        last_close = float(df["close"].iloc[-1])
-        # Generate reasonable 30-day random walk with slight upward drift
-        dates = pd.date_range(start=x_timestamp.iloc[-1] + pd.Timedelta(days=1), periods=pred_len, freq='D')
-        noise = np.random.normal(0, last_close * 0.005, size=pred_len)
-        drift = np.linspace(0, last_close * 0.015, pred_len)
-        closes = last_close + np.cumsum(noise) + drift
-        return pd.DataFrame({
-            'open': closes * 0.998,
-            'high': closes * 1.006,
-            'low': closes * 0.994,
-            'close': closes
-        })
+    """Removed — synthetic predictions must not reach order paths.
+    Kept as a tombstone so git history shows the removal clearly."""
+    pass
 
 
 def get_kronos_predictor():
@@ -99,7 +88,12 @@ def run_monthly_analysis(send_telegram: bool = True) -> List[Dict[str, Any]]:
         wing = asset["wing"]
         lot_size = asset.get("lot_size", 65)
 
-        df = data_provider.fetch_daily(symbol, days=180)
+        try:
+            df = data_provider.fetch_daily(symbol, days=180)
+        except RuntimeError as e:
+            logger.warning(f"[MonthlyEngine] No data for {symbol}: {e}. Skipping.")
+            send_telegram_message(f"⚠️ <b>Monthly Engine:</b> Skipping {name} — no market data: <code>{e}</code>")
+            continue
         if len(df) < 60:
             logger.warning(f"[MonthlyEngine] Insufficient data for {symbol} ({len(df)} candles). Skipping.")
             continue
@@ -122,8 +116,9 @@ def run_monthly_analysis(send_telegram: bool = True) -> List[Dict[str, Any]]:
                 verbose=False
             )
         except Exception as e:
-            logger.warning(f"[MonthlyEngine] Model prediction failed for {symbol}: {e}. Using fallback.")
-            pred_df = FallbackPredictor().predict(x_df, x_timestamp, y_timestamp, pred_len)
+            logger.warning(f"[MonthlyEngine] Model prediction failed for {symbol}: {e}. Skipping asset.")
+            send_telegram_message(f"⚠️ <b>Monthly Engine:</b> Skipping {name} — model prediction failed: <code>{e}</code>")
+            continue
 
         curr_close = round(float(x_df["close"].iloc[-1]), 2)
         proj_close = round(float(pred_df["close"].iloc[-1]), 2)

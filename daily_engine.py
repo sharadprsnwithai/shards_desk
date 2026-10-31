@@ -85,7 +85,13 @@ def run_intraday_entry(send_telegram: bool = True) -> Dict[str, Any]:
     dp = DataProvider()
     engine = HybridSignalEngine(use_kronos=True, use_lstm=True)
 
-    df_5m = dp.fetch_intraday_5m(NIFTY_SYMBOL, days=5, use_cache=False)
+    try:
+        df_5m = dp.fetch_intraday_5m(NIFTY_SYMBOL, days=5, use_cache=False)
+    except RuntimeError as e:
+        logger.error(f"[DailyEngine] Entry aborted — no market data: {e}")
+        if send_telegram:
+            send_telegram_message(f"⚠️ <b>Entry Aborted (No Data):</b> <code>{e}</code>")
+        return {}
     if df_5m is None or len(df_5m) < 40:
         logger.error("[DailyEngine] Insufficient 5m data. Skipping entry.")
         return {}
