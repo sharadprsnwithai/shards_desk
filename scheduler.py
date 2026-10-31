@@ -109,22 +109,33 @@ def check_scheduled_triggers(
             run_intraday_exit_fn(send_telegram=True)
         state["last_exit_date"] = today
 
-    # 3. 4:00 PM (16:00) IST Last Day of Month: Auto-Retrain Monthly Multi-Asset LSTM
+    # 3. 4:00 PM (16:00) IST Last Day of Month: Auto-Retrain Monthly Multi-Asset LSTM & Nifty Intraday LSTM
     if is_last_day_of_month(today) and hour == 16 and minute == 0 and state.get("last_monthly_train_date") != today:
-        logger.info("[Scheduler] Triggering Last-Day-of-Month 4:00 PM Multi-Asset Monthly LSTM Retraining...")
+        logger.info("[Scheduler] Triggering Last-Day-of-Month 4:00 PM Model Retraining...")
+        
+        # 3a. Retrain Monthly Multi-Asset LSTM
         if train_monthly_fn:
             try:
                 train_monthly_fn(epochs=35)
-                logger.info("[Scheduler] Monthly LSTM weights updated successfully.")
+                logger.info("[Scheduler] Monthly Multi-Asset LSTM weights updated.")
             except Exception as e:
-                logger.error(f"[Scheduler] Monthly LSTM retraining failed: {e}", exc_info=True)
+                logger.error(f"[Scheduler] Monthly Multi-Asset LSTM retraining failed: {e}", exc_info=True)
         else:
             try:
                 from monthly_direction_engine.train_monthly_lstm import train_multi_asset_monthly_lstm
                 train_multi_asset_monthly_lstm(epochs=35)
-                logger.info("[Scheduler] Monthly LSTM weights updated successfully.")
+                logger.info("[Scheduler] Monthly Multi-Asset LSTM weights updated.")
             except Exception as e:
-                logger.error(f"[Scheduler] Monthly LSTM retraining failed: {e}", exc_info=True)
+                logger.error(f"[Scheduler] Monthly Multi-Asset LSTM retraining failed: {e}", exc_info=True)
+        
+        # 3b. Retrain Nifty Intraday LSTM
+        try:
+            from train_lstm import train_lstm_model
+            train_lstm_model(epochs=35)
+            logger.info("[Scheduler] Nifty Intraday LSTM weights updated.")
+        except Exception as e:
+            logger.error(f"[Scheduler] Nifty Intraday LSTM retraining failed: {e}", exc_info=True)
+
         state["last_monthly_train_date"] = today
 
     # 4. 5:00 PM (17:00) IST Last Day of Month Positional Run
