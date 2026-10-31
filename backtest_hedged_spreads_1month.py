@@ -31,7 +31,7 @@ from nifty_direction_engine.hybrid_engine import HybridSignalEngine
 
 # ── Constants ──────────────────────────────────────────────────────────────────
 STEP          = 50
-LOT_SIZE      = 75          # Nifty lot size
+LOT_SIZE      = 65          # Nifty lot size
 RISK_FREE     = 0.065       # 6.5% risk-free rate
 IV_BASE       = 0.14        # ~14% base IV for weekly Nifty options (realistic)
 

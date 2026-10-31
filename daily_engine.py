@@ -366,16 +366,29 @@ def run_intraday_exit(send_telegram: bool = True) -> Dict[str, Any]:
         entry_prem = float(leg.get("entry_premium", 0.0))
         status = leg.get("status", "ACTIVE")
 
-        # Hedge wings: record as flat (no SL/TP logic ever applied to them)
+        # Hedge wings: close at market LTP, true net PnL (exit - entry)
         if leg.get("action") == "BUY":
+            exit_prem = float(leg.get("exit_premium", entry_prem))
+            if dp.kite and tradingsymbol:
+                try:
+                    key = f"NFO:{tradingsymbol}"
+                    quote = dp.kite.quote(key)
+                    exit_prem = float(quote[key]["last_price"])
+                except Exception as e:
+                    logger.warning(f"[DailyEngine] Could not fetch exit quote for hedge {tradingsymbol}: {e}")
+
+            # Profit for long leg = exit - entry
+            pts = exit_prem - entry_prem
+            total_pts += pts
+
             legs_pnl.append({
                 "action": "BUY",
                 "strike": leg.get("strike", 0),
                 "type": leg.get("type", "CE"),
                 "tradingsymbol": tradingsymbol,
                 "entry_premium": entry_prem,
-                "exit_premium": entry_prem,
-                "points_gained": 0.0,
+                "exit_premium": exit_prem,
+                "points_gained": pts,
                 "status": "HEDGE WING"
             })
             continue
@@ -442,7 +455,7 @@ def run_intraday_exit(send_telegram: bool = True) -> Dict[str, Any]:
     print(f"  • Entry Spot: ₹{pos.get('spot_10am', 0.0):,.2f} -> Exit Spot: ₹{spot_1500:,.2f}")
     for leg in legs_pnl:
         print(f"    -> {leg['tradingsymbol']}: Entry ₹{leg['entry_premium']:.2f} | Exit ₹{leg['exit_premium']:.2f} | PnL: {leg['points_gained']:+.2f} pts")
-    print(f"  • Net Points Captured: {total_pts:+.2f} pts (₹{total_pts * 25:+,.2f} per lot)")
+    print(f"  • Net Points Captured: {total_pts:+.2f} pts (₹{total_pts * 65:+,.2f} per lot)")
 
     # Automated 3:00 PM Square-Off Execution for any remaining open legs
     cfg = Config.load()

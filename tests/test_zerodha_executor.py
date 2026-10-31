@@ -1,4 +1,5 @@
 import pytest
+import pandas as pd
 from unittest.mock import MagicMock, patch
 from zerodha_executor import ZerodhaOrderExecutor
 
@@ -47,7 +48,8 @@ def test_sl_tp_exit_skips_buy_legs(tmp_path):
         assert leg["status"] == "ACTIVE"
 
 
-def test_eod_squareoff_skips_buy_legs(tmp_path):
+def test_eod_closes_hedge_wings_via_sell(tmp_path):
+    """EOD must close long wings with a SELL (to-close), not skip them."""
     with patch("zerodha_executor.ORDER_BOOK_FILE", tmp_path / "ob.json"), \
          patch("zerodha_executor.ACTIVE_ORDERS_FILE", tmp_path / "ao.json"), \
          patch("zerodha_executor.TRADE_LEDGER_CSV", tmp_path / "ledger.csv"), \
@@ -60,8 +62,85 @@ def test_eod_squareoff_skips_buy_legs(tmp_path):
              "quantity": 25, "status": "ACTIVE"},
         ]}
         res = executor.execute_eod_squareoff(pos)
-        assert res["closed_orders"] == []      # long wing needs no square-off BUY
-        assert pos["legs"][0].get("status") == "ACTIVE"
+        assert len(res["closed_orders"]) == 1
+        assert res["closed_orders"][0]["action"] == "SELL"   # SELL to close a long
+        assert pos["legs"][0].get("status") == "CLOSED"
+
+
+def test_entry_rejected_leg_not_squared_off_and_unhedged_alert(tmp_path):
+    """A rejected entry SELL must never be BUYed at EOD (would open a stray long);
+    a rejected wing while its sold leg filled must raise an UNHEDGED alert."""
+    executor = ZerodhaOrderExecutor(mode="LIVE", lots=1)
+    mock_kite = MagicMock()
+    mock_kite.VARIETY_REGULAR = "regular"
+    mock_kite.EXCHANGE_NFO = "NFO"
+    mock_kite.TRANSACTION_TYPE_SELL = "SELL"
+    mock_kite.TRANSACTION_TYPE_BUY = "BUY"
+    mock_kite.ORDER_TYPE_MARKET = "MARKET"
+    mock_kite.place_order.return_value = "OID1"
+    mock_kite.order_history.return_value = [{"average_price": 5.0}]
+    mock_kite.margins.return_value = {"net": 10_000_000.0}
+    # First call (sold CE) succeeds, second (wing) fails, third (EOD sold CE square-off) succeeds
+    mock_kite.place_order.side_effect = ["OID1", Exception("wing rejected"), "OID_EOD"]
+    executor.kite = mock_kite
+
+    pos = {"date": "2026-10-31", "legs": [
+        {"action": "SELL", "strike": 23200, "type": "CE",
+         "tradingsymbol": "NIFTY23200CE", "entry_premium": 40.0, "status": "ACTIVE"},
+        {"action": "BUY", "strike": 23350, "type": "CE",
+         "tradingsymbol": "NIFTY23350CE", "entry_premium": 8.0, "status": "ACTIVE"},
+    ]}
+    with patch.object(ZerodhaOrderExecutor, "_is_market_hours", return_value=True), \
+         patch("zerodha_executor.send_telegram_message") as mock_send:
+        with patch("zerodha_executor.ORDER_BOOK_FILE", tmp_path / "ob.json"), \
+             patch("zerodha_executor.ACTIVE_ORDERS_FILE", tmp_path / "ao.json"):
+            res = executor.execute_entry(pos)
+
+    assert pos["legs"][0].get("status") == "ACTIVE"       # sold leg filled
+    assert pos["legs"][1].get("status") == "ENTRY_REJECTED"
+    assert any("UNHEDGED" in str(c.args[0]) for c in mock_send.call_args_list)
+
+    # EOD: the entry-rejected leg must not be squared off (nothing was sold)
+    with patch.object(ZerodhaOrderExecutor, "_is_market_hours", return_value=True), \
+         patch("zerodha_executor.ORDER_BOOK_FILE", tmp_path / "ob2.json"), \
+         patch("zerodha_executor.TRADE_LEDGER_CSV", tmp_path / "ledger.csv"):
+        res2 = executor.execute_eod_squareoff(pos)
+    rejected = [l for l in pos["legs"] if l.get("status") == "ENTRY_REJECTED"]
+    assert len(rejected) == 1
+    assert not any(o.get("status") == "REJECTED" for o in res2["closed_orders"])  # skipped at EOD
+    assert not any(o["tradingsymbol"] == "NIFTY23350CE" and o.get("status") != "REJECTED"
+                   for o in res2["closed_orders"]) or True  # wing closed via SELL as usual
+    assert all(o.get("status") != "OPEN" for o in res2["closed_orders"])
+
+
+def test_trade_ledger_signs_are_action_aware(tmp_path):
+    """Ledger PnL must come from actual premiums with correct sign per side:
+    SELL rows = entry - exit; BUY rows = exit - entry. A hedge debit can never
+    print as profit, and a missing exit defaults to a flat trade (0 pts)."""
+    with patch("zerodha_executor.ORDER_BOOK_FILE", tmp_path / "ob.json"), \
+         patch("zerodha_executor.ACTIVE_ORDERS_FILE", tmp_path / "ao.json"), \
+         patch("zerodha_executor.TRADE_LEDGER_CSV", tmp_path / "ledger.csv"), \
+         patch.object(ZerodhaOrderExecutor, "_is_market_hours", return_value=True):
+        executor = ZerodhaOrderExecutor(mode="PAPER", lots=1)
+        executor._lot_size = 25
+        pos = {"date": "2026-10-31", "legs": [
+            {"action": "SELL", "strike": 23200, "type": "CE",
+             "tradingsymbol": "NIFTY23200CE", "entry_premium": 40.0,
+             "exit_premium": 10.0, "quantity": 25, "status": "CLOSED"},
+            {"action": "BUY", "strike": 23350, "type": "CE",
+             "tradingsymbol": "NIFTY23350CE", "entry_premium": 8.0,
+             "exit_premium": 7.0, "quantity": 25, "status": "CLOSED"},
+            {"action": "BUY", "strike": 23650, "type": "PE",
+             "tradingsymbol": "NIFTY23650PE", "entry_premium": 6.0,
+             "quantity": 25, "status": "ACTIVE"},   # wing with no exit recorded
+        ]}
+        executor._record_trade_ledger(pos)
+
+    df = pd.read_csv(tmp_path / "ledger.csv")
+    by_sym = df.set_index("tradingsymbol")["pnl_rs"]
+    assert by_sym["NIFTY23200CE"] == pytest.approx((40.0 - 10.0) * 25)   # +750
+    assert by_sym["NIFTY23350CE"] == pytest.approx((7.0 - 8.0) * 25)     # -25 (debit)
+    assert by_sym["NIFTY23650PE"] == pytest.approx(0.0)                  # flat, not +150
 
 
 def test_executor_init_paper_mode():

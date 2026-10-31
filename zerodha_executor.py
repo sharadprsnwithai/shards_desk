@@ -70,7 +70,7 @@ class ZerodhaOrderExecutor:
     def get_nifty_lot_size(self) -> int:
         """
         Dynamically fetches current NIFTY lot size from Kite Connect instruments.
-        Falls back to 25 if Kite is not connected or instruments fetch fails.
+        Falls back to 65 if Kite is not connected or instruments fetch fails.
         """
         if self._lot_size is not None:
             return self._lot_size
@@ -86,14 +86,14 @@ class ZerodhaOrderExecutor:
             except Exception as e:
                 logger.warning(f"[Executor] Could not fetch instruments from Kite: {e}")
 
-        # Fallback to standard 25
-        self._lot_size = 25
+        # Fallback to standard 65
+        self._lot_size = 65
         return self._lot_size
 
     def check_margin_availability(self, required_lots: int) -> bool:
         """
         In LIVE mode: Verifies if Zerodha account has sufficient free cash margin.
-        Assumes ~₹1,35,000 per lot for naked selling.
+        Assumes ~₹55,000 per lot for hedged credit spreads / Iron Condor.
         In PAPER mode: Always returns True.
         """
         if self.is_paper:
@@ -106,8 +106,8 @@ class ZerodhaOrderExecutor:
         try:
             margins = self.kite.margins("equity")
             available_cash = float(margins.get("net", 0.0))
-            # Conservative ~₹1,35,000 per lot requirement
-            required_margin = required_lots * 135_000.0
+            # Hedged credit spread requirement (~₹55,000 per lot)
+            required_margin = required_lots * 55_000.0
 
             logger.info(
                 f"[Executor] Margin Check: Available=₹{available_cash:,.2f} | "
@@ -178,7 +178,7 @@ class ZerodhaOrderExecutor:
             if not self.check_margin_availability(self.lots):
                 send_telegram_message(
                     f"⚠️ <b>LIVE ORDER REJECTED (INSUFFICIENT MARGIN):</b>\n"
-                    f"Required: ~₹{self.lots * 135000:,.0f} for {self.lots} lot(s). Check Zerodha funds."
+                    f"Required: ~₹{self.lots * 55000:,.0f} for {self.lots} lot(s). Check Zerodha funds."
                 )
                 return {"status": "MARGIN_FAILED", "orders": []}
 
@@ -249,6 +249,7 @@ class ZerodhaOrderExecutor:
                     order_record["error"] = str(e)
                     logger.error(f"[Executor] ❌ LIVE Order Failed for {tsym}: {e}")
                     send_telegram_message(f"⚠️ <b>Order Placement Error ({tsym}):</b>\n<code>{e}</code>")
+                    leg["status"] = "ENTRY_REJECTED"
 
             else:  # PAPER MODE
                 order_record["order_id"] = f"PAPER_{int(time.time() * 1000)}"
@@ -264,6 +265,16 @@ class ZerodhaOrderExecutor:
 
             executed_orders.append(order_record)
             self._append_to_order_book(order_record)
+
+        # Alert when a sold leg filled but its hedge wing was rejected (unhedged exposure)
+        filled_sold = [l for l in legs if l.get("action") == "SELL" and l.get("status") == "ACTIVE"]
+        rejected_wing = [l for l in legs if l.get("action") == "BUY" and l.get("status") == "ENTRY_REJECTED"]
+        if filled_sold and rejected_wing:
+            sym = filled_sold[0].get("tradingsymbol", "?")
+            send_telegram_message(
+                f"⚠️ <b>UNHEDGED ALERT — {sym}</b>\n"
+                f"Sold leg filled; hedge wing rejected. Short position is unhedged — do not hold overnight."
+            )
 
         # Dispatch execution confirmation to Telegram
         self._send_entry_telegram_notice(executed_orders)
@@ -380,10 +391,9 @@ class ZerodhaOrderExecutor:
         closed_orders = []
 
         for leg in legs:
-            # Skip if already squared off via SL or TP, or a long hedge wing
-            if leg.get("status") in ("STOP_LOSS_HIT", "TARGET_HIT", "CLOSED"):
-                continue
-            if leg.get("action") == "BUY":
+            # Skip if already squared off via SL/TP, already CLOSED, or whose
+            # entry was rejected (nothing was ever bought/sold — no order to close).
+            if leg.get("status") in ("STOP_LOSS_HIT", "TARGET_HIT", "CLOSED", "ENTRY_REJECTED"):
                 continue
 
             tsym = leg.get("tradingsymbol", "")
@@ -395,10 +405,20 @@ class ZerodhaOrderExecutor:
                 logger.error(f"[Executor] EOD squareoff: missing quantity on leg {tsym}. Skipping.")
                 continue
 
+            # Close long wings with SELL; cover short legs with BUY
+            if leg.get("action") == "BUY":
+                tx_type = self.kite.TRANSACTION_TYPE_SELL
+                close_action = "SELL"
+                pts = float(leg.get("exit_premium", 0.0) or 0.0) - float(leg.get("entry_premium", 0.0) or 0.0)
+            else:
+                tx_type = self.kite.TRANSACTION_TYPE_BUY
+                close_action = "BUY"
+                pts = float(leg.get("entry_premium", 0.0) or 0.0) - float(leg.get("exit_premium", 0.0) or 0.0)
+
             order_record = {
                 "timestamp": datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
                 "mode": self.mode,
-                "action": "BUY",
+                "action": close_action,
                 "trigger_type": "3:00 PM EOD",
                 "tradingsymbol": tsym,
                 "quantity": qty,
@@ -415,7 +435,7 @@ class ZerodhaOrderExecutor:
                             variety=self.kite.VARIETY_REGULAR,
                             exchange=self.kite.EXCHANGE_NFO,
                             tradingsymbol=tsym,
-                            transaction_type=self.kite.TRANSACTION_TYPE_BUY,
+                            transaction_type=tx_type,
                             quantity=order_record["quantity"],
                             order_type=self.kite.ORDER_TYPE_MARKET,
                             product=self.product,
@@ -431,10 +451,16 @@ class ZerodhaOrderExecutor:
             else:
                 order_record["order_id"] = f"PAPER_EOD_{int(time.time() * 1000)}"
                 order_record["status"] = "COMPLETE"
+                order_record["points_gained"] = pts
+                leg["points_gained"] = pts
 
-            # Only a complete order closes the leg; a rejected/failed one stays
-            # OPEN so daily_engine retains the position state for retry/alert.
+            # Only a complete order closes the leg
             leg["status"] = "CLOSED" if order_record["status"] == "COMPLETE" else "OPEN"
+            leg["points_gained"] = pts
+            order_record["points_gained"] = pts
+            if order_record["status"] == "COMPLETE":
+                leg["points_gained"] = pts
+                order_record["points_gained"] = pts
             closed_orders.append(order_record)
             self._append_to_order_book(order_record)
 
@@ -479,7 +505,15 @@ class ZerodhaOrderExecutor:
                 continue
             entry_p = float(leg.get("entry_premium", 0.0))
             exit_p = float(leg.get("exit_premium", 0.0))
-            pts = float(leg.get("points_gained", entry_p - exit_p))
+            if exit_p <= 0:
+                # No exit recorded: trade stays flat — never fabricate PnL.
+                pts = 0.0
+            elif leg.get("action") == "BUY":
+                # Long hedge wing: profit when sold back above entry
+                pts = exit_p - entry_p
+            else:
+                # Short leg: profit when bought back below entry
+                pts = entry_p - exit_p
             qty = leg.get("quantity", self.lots * lot_size)
             pnl_rs = pts * qty
 

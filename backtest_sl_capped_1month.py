@@ -28,7 +28,7 @@ except Exception:
 from nifty_direction_engine.hybrid_engine import HybridSignalEngine
 
 STEP = 50
-LOT_SIZE = 75
+LOT_SIZE = 65
 RISK_FREE = 0.065
 IV_BASE = 0.14
 CAPITAL = 5_00_000
