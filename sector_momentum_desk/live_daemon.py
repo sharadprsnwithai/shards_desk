@@ -33,7 +33,6 @@ from dotenv import load_dotenv
 from sector_momentum_desk.config import (
     BIAS_THRESHOLD,
     CANDLE_INTERVAL,
-    DAILY_MAX_LOSS_LIMIT,
     DATA_CACHE_DIR,
     EMA_TRAIL_PERIOD,
     NUM_TOP_STOCKS,
@@ -139,14 +138,6 @@ class SectorMomentumDaemon:
                     continue
 
                 # ── 5. 09:30 - 15:15 PM IST: Phase 2 Real-Time 5m Loop ────────
-                # Check for daily max loss circuit breaker
-                total_pnl = sum(pos["pnl_pts"] for pos in self.closed_positions)
-                if total_pnl <= -DAILY_MAX_LOSS_LIMIT:
-                    logger.critical(f"DAILY MAX LOSS LIMIT REACHED ({total_pnl:.2f}). Squaring off and stopping...")
-                    self._square_off_all_positions(now, reason="DAILY_MAX_LOSS")
-                    self.running = False
-                    continue
-
                 self._run_phase_2_tick(now)
 
                 # Sleep until 10 seconds after the next 5-minute boundary (:00, :05, :10, ...)
@@ -275,9 +266,6 @@ class SectorMomentumDaemon:
             else (pos["entry_price"] - exit_price)
         )
         pnl_pct = (pnl_pts / pos["entry_price"]) * 100.0
-        
-        # Track for daily circuit breaker
-        self.closed_positions.append({"pnl_pts": pnl_pts})
 
         icon = "🎯" if pnl_pct > 0 else "🛑"
         reason_label = "10 EMA Trailing Exit" if reason == "10_EMA_TRAIL" else "Stop-Loss Hit"
