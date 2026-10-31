@@ -3,6 +3,67 @@ from unittest.mock import MagicMock, patch
 from zerodha_executor import ZerodhaOrderExecutor
 
 
+def test_entry_places_buy_legs_as_buy():
+    """LIVE path: BUY wing legs must be sent as TRANSACTION_TYPE_BUY, not SELL."""
+    executor = ZerodhaOrderExecutor(mode="LIVE", lots=1)
+    mock_kite = MagicMock()
+    mock_kite.VARIETY_REGULAR = "regular"
+    mock_kite.EXCHANGE_NFO = "NFO"
+    mock_kite.TRANSACTION_TYPE_SELL = "SELL"
+    mock_kite.TRANSACTION_TYPE_BUY = "BUY"
+    mock_kite.ORDER_TYPE_MARKET = "MARKET"
+    mock_kite.place_order.return_value = "OID1"
+    mock_kite.order_history.return_value = [{"average_price": 5.0}]
+    mock_kite.margins.return_value = {"net": 10_000_000.0}
+    executor.kite = mock_kite
+
+    pos = {"date": "2026-10-31", "legs": [
+        {"action": "SELL", "strike": 23200, "type": "CE",
+         "tradingsymbol": "NIFTY23200CE", "entry_premium": 40.0, "status": "ACTIVE"},
+        {"action": "BUY", "strike": 23350, "type": "CE",
+         "tradingsymbol": "NIFTY23350CE", "entry_premium": 8.0, "status": "ACTIVE"},
+    ]}
+    with patch.object(ZerodhaOrderExecutor, "_is_market_hours", return_value=True):
+        res = executor.execute_entry(pos)
+
+    assert len(res["orders"]) == 2
+    assert all(o["status"] == "COMPLETE" for o in res["orders"])
+    tx_types = [c.kwargs["transaction_type"] for c in mock_kite.place_order.call_args_list]
+    syms = [c.kwargs["tradingsymbol"] for c in mock_kite.place_order.call_args_list]
+    assert tx_types == ["SELL", "BUY"]          # wing was placed as BUY, not SELL
+    assert syms == ["NIFTY23200CE", "NIFTY23350CE"]
+
+
+def test_sl_tp_exit_skips_buy_legs(tmp_path):
+    with patch("zerodha_executor.ORDER_BOOK_FILE", tmp_path / "ob.json"), \
+         patch.object(ZerodhaOrderExecutor, "_is_market_hours", return_value=True):
+        executor = ZerodhaOrderExecutor(mode="PAPER", lots=1)
+        leg = {"action": "BUY", "strike": 23350, "type": "CE",
+               "tradingsymbol": "NIFTY23350CE", "entry_premium": 8.0,
+               "sl_premium": 9.0, "target_premium": 2.0, "exit_premium": 2.0,
+               "status": "ACTIVE"}
+        res = executor.execute_sl_tp_exit(leg, trigger_type="STOP_LOSS")
+        assert res["status"] == "SKIPPED_LONG_LEG"
+        assert leg["status"] == "ACTIVE"
+
+
+def test_eod_squareoff_skips_buy_legs(tmp_path):
+    with patch("zerodha_executor.ORDER_BOOK_FILE", tmp_path / "ob.json"), \
+         patch("zerodha_executor.ACTIVE_ORDERS_FILE", tmp_path / "ao.json"), \
+         patch("zerodha_executor.TRADE_LEDGER_CSV", tmp_path / "ledger.csv"), \
+         patch.object(ZerodhaOrderExecutor, "_is_market_hours", return_value=True):
+        executor = ZerodhaOrderExecutor(mode="PAPER", lots=1)
+        executor._lot_size = 25
+        pos = {"date": "2026-10-31", "legs": [
+            {"action": "BUY", "strike": 23350, "type": "CE",
+             "tradingsymbol": "NIFTY23350CE", "entry_premium": 8.0,
+             "quantity": 25, "status": "ACTIVE"},
+        ]}
+        res = executor.execute_eod_squareoff(pos)
+        assert res["closed_orders"] == []      # long wing needs no square-off BUY
+        assert pos["legs"][0].get("status") == "ACTIVE"
+
+
 def test_executor_init_paper_mode():
     executor = ZerodhaOrderExecutor(mode="PAPER", lots=2)
     assert executor.is_paper is True

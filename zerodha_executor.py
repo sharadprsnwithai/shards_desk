@@ -187,6 +187,7 @@ class ZerodhaOrderExecutor:
         for leg in legs:
             tsym = leg.get("tradingsymbol", "")
             action = leg.get("action", "SELL")
+            leg_tx_type = self.kite.TRANSACTION_TYPE_BUY if action == "BUY" else self.kite.TRANSACTION_TYPE_SELL
             opt_type = leg.get("type", "CE")
             strike = leg.get("strike", 0)
             entry_prem = float(leg.get("entry_premium", 0.0))
@@ -217,7 +218,7 @@ class ZerodhaOrderExecutor:
                         variety=self.kite.VARIETY_REGULAR,
                         exchange=self.kite.EXCHANGE_NFO,
                         tradingsymbol=tsym,
-                        transaction_type=self.kite.TRANSACTION_TYPE_SELL,
+                        transaction_type=leg_tx_type,
                         quantity=total_qty,
                         order_type=self.kite.ORDER_TYPE_MARKET,
                         product=self.product,
@@ -288,6 +289,10 @@ class ZerodhaOrderExecutor:
                 "outside NSE market hours."
             )
             return {"status": "OUTSIDE_MARKET_HOURS"}
+
+        # Long hedge wings have no SL/TP to monitor — nothing to square off
+        if leg.get("action") == "BUY":
+            return {"status": "SKIPPED_LONG_LEG"}
 
         tsym = leg.get("tradingsymbol", "")
         lot_size = self.get_nifty_lot_size()
@@ -375,8 +380,10 @@ class ZerodhaOrderExecutor:
         closed_orders = []
 
         for leg in legs:
-            # Skip if already squared off via SL or TP
+            # Skip if already squared off via SL or TP, or a long hedge wing
             if leg.get("status") in ("STOP_LOSS_HIT", "TARGET_HIT", "CLOSED"):
+                continue
+            if leg.get("action") == "BUY":
                 continue
 
             tsym = leg.get("tradingsymbol", "")
