@@ -52,6 +52,11 @@ class LSTMDirectionPredictor:
             self.std = checkpoint.get("std", None)
             self.model.eval()
             print(f"[LSTMDirectionPredictor] Loaded model from {weights_path}")
+        elif weights_path:
+            raise RuntimeError(
+                f"LSTM weights file not found: {weights_path}. "
+                "Cannot trade without trained weights."
+            )
         else:
             self.mean = None
             self.std = None

@@ -38,9 +38,16 @@ class HybridSignalEngine:
         if self.use_lstm:
             path = weights_path or str(WEIGHTS_PATH)
             print(f"[HybridSignalEngine] Initializing LSTM Predictor from {path}...")
-            self.lstm = LSTMDirectionPredictor(weights_path=path)
+            try:
+                self.lstm = LSTMDirectionPredictor(weights_path=path)
+                self._lstm_error: str = ""
+            except RuntimeError as e:
+                self.lstm = None
+                self._lstm_error = str(e)
+                print(f"[HybridSignalEngine] ⛔ LSTM unavailable: {e}")
         else:
             self.lstm = None
+            self._lstm_error = ""
 
     def _prepare_lstm_input(self, df_lookback: pd.DataFrame, day_open: float, atr_val: float) -> np.ndarray:
         """Constructs [1, seq_len, 6] feature tensor for the LSTM."""
@@ -85,6 +92,13 @@ class HybridSignalEngine:
         spot_10am = float(df_lookback["close"].iloc[-1])
         day_open = float(df_lookback["open"].iloc[0])
         atr_val = float(calculate_atr(df_lookback).dropna().iloc[-1]) if len(df_lookback) >= 14 else 50.0
+
+        # Guard: if LSTM was requested but weights are missing, refuse to trade
+        if self.use_lstm and self.lstm is None and self._lstm_error:
+            return {
+                "final_bias": "SIDEWAYS_NO_TRADE",
+                "reason": f"Model weights unavailable: {self._lstm_error}"
+            }
 
         predictions = []
         kronos_ret = 0.0
