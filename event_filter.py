@@ -1,6 +1,8 @@
 from datetime import datetime, date
 from typing import Optional, Dict
 
+from market_calendar import is_nse_trading_day
+
 # Known high-impact scheduled dates (RBI Monetary Policy Committee, Union Budget, etc.)
 # Can be updated or expanded with NSE corporate earnings dates
 MAJOR_EVENT_CALENDAR: Dict[str, str] = {
@@ -29,3 +31,15 @@ def check_event_risk(target_date: Optional[date] = None) -> Optional[str]:
     check_d = target_date or datetime.now().date()
     date_str = check_d.strftime("%Y-%m-%d")
     return MAJOR_EVENT_CALENDAR.get(date_str, None)
+
+
+def should_skip_trading(d: Optional[date] = None) -> bool:
+    """
+    Returns True when trading should be skipped entirely for the given date:
+      - NSE is closed (weekend or exchange holiday), OR
+      - A high-impact macro event is scheduled.
+    """
+    check_d = d or datetime.now().date()
+    if not is_nse_trading_day(check_d):
+        return True
+    return check_event_risk(check_d) is not None

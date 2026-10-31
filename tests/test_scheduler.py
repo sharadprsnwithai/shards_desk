@@ -1,6 +1,7 @@
 from datetime import date
 from scheduler import is_last_day_of_month
 
+
 def test_is_last_day_of_month_various_months():
     # January 31 -> True
     assert is_last_day_of_month(date(2025, 1, 31)) is True
@@ -77,3 +78,22 @@ def test_scheduler_triggers_monthly_retrain_and_run():
     assert mock_monthly.call_count == 1
     assert state["last_monthly_run_date"] == datetime(2025, 1, 31).date()
 
+
+def test_scheduler_skips_entry_on_nse_holiday():
+    from unittest.mock import MagicMock, patch
+    import pytz
+    from datetime import datetime
+    from scheduler import check_scheduled_triggers
+
+    tz = pytz.timezone("Asia/Kolkata")
+    state = {"last_entry_date": None, "last_exit_date": None,
+             "last_monthly_train_date": None, "last_monthly_run_date": None}
+    mock_entry = MagicMock()
+
+    # Independence Day 2025 at 10:00 AM — weekday but NSE holiday
+    t = tz.localize(datetime(2025, 8, 15, 10, 0, 0))
+    with patch("scheduler.should_skip_trading", return_value=True):
+        check_scheduled_triggers(t, state, run_intraday_entry_fn=mock_entry,
+                                 run_intraday_exit_fn=MagicMock(),
+                                 monitor_intraday_fn=None)
+    mock_entry.assert_not_called()

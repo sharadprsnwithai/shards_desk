@@ -5,6 +5,7 @@ import pytz
 
 from monthly_engine import run_monthly_analysis
 from daily_engine import run_intraday_entry, run_intraday_exit, monitor_intraday_sl_tp
+from event_filter import should_skip_trading
 from config import Config
 
 logger = logging.getLogger(__name__)
@@ -76,6 +77,12 @@ def check_scheduled_triggers(
             )
             state["last_exit_date"] = today
     # ── End missed-window guard ──────────────────────────────────────────────
+
+    # ── Non-trading day guard ────────────────────────────────────────
+    if should_skip_trading(today):
+        logger.info(f"[Scheduler] {today} is a non-trading day (holiday or high-impact event). All intraday triggers skipped.")
+        return state
+    # ── End non-trading day guard ──────────────────────────────────
 
     # 1. 10:00 AM IST Weekday Intraday Entry (Mon-Fri) — fires only within ±2 min window
     if weekday < 5 and hour == 10 and minute <= _ENTRY_WINDOW_MINUTES and state.get("last_entry_date") != today:
