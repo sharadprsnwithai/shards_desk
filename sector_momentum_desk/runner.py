@@ -26,6 +26,8 @@ from sector_momentum_desk.entry_trigger import EntryTriggerEngine
 
 logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(message)s")
 logger = logging.getLogger(__name__)
+# shortcut: Telegram-only exits, no order path — wire a ZerodhaOrderExecutor-style
+# layer before this desk ever auto-trades.
 
 _SESSION_END_TIME = time(int(SESSION_END.split(":")[0]), int(SESSION_END.split(":")[1]))
 
