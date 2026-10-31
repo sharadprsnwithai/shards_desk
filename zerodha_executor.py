@@ -432,7 +432,9 @@ class ZerodhaOrderExecutor:
                 order_record["order_id"] = f"PAPER_EOD_{int(time.time() * 1000)}"
                 order_record["status"] = "COMPLETE"
 
-            leg["status"] = "CLOSED"
+            # Only a complete order closes the leg; a rejected/failed one stays
+            # OPEN so daily_engine retains the position state for retry/alert.
+            leg["status"] = "CLOSED" if order_record["status"] == "COMPLETE" else "OPEN"
             closed_orders.append(order_record)
             self._append_to_order_book(order_record)
 

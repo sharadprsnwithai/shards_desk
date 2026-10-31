@@ -82,6 +82,73 @@ def test_build_legs_zero_quote_legs_and_entry_abort(tmp_path, monkeypatch):
     assert not daily_engine.ACTIVE_POSITION_FILE.exists()
 
 
+def test_sl_points_derive_from_actual_fill(tmp_path, monkeypatch):
+    """SL hit fills worse than the SL price -> PnL must reflect the real fill, not -50%."""
+    daily_engine.ACTIVE_POSITION_FILE = tmp_path / "pos.json"
+    pos = {"date": "2026-10-31", "legs": [
+        {"action": "SELL", "strike": 23200, "type": "CE",
+         "tradingsymbol": "NIFTY23200CE", "entry_premium": 100.0,
+         "sl_premium": 150.0, "target_premium": 20.0, "status": "ACTIVE"}
+    ]}
+    daily_engine.save_active_position(pos)
+    mock_kite = MagicMock()
+    mock_kite.quote.return_value = {"NFO:NIFTY23200CE": {"last_price": 165.0}}
+    mock_dp = MagicMock()
+    mock_dp.kite = mock_kite
+    monkeypatch.setattr(daily_engine, "DataProvider", lambda: mock_dp)
+
+    daily_engine.monitor_intraday_sl_tp(send_telegram=False)
+    leg = daily_engine.load_active_position()["legs"][0]
+    assert leg["status"] == "STOP_LOSS_HIT"
+    assert leg["points_gained"] == pytest.approx(-65.0)   # 100 - 165, not -50
+
+
+def test_run_intraday_exit_keeps_file_when_leg_open(tmp_path, monkeypatch):
+    """A leg whose square-off failed (status OPEN) must keep the position file on disk."""
+    daily_engine.ACTIVE_POSITION_FILE = tmp_path / "pos.json"
+    pos = {"date": "2026-10-31", "legs": [
+        {"action": "SELL", "strike": 23200, "type": "CE",
+         "tradingsymbol": "NIFTY23200CE", "entry_premium": 50.0,
+         "sl_premium": 75.0, "target_premium": 10.0, "status": "OPEN"}
+    ]}
+    daily_engine.save_active_position(pos)
+    mock_dp = MagicMock()
+    mock_dp.kite = None
+    mock_dp.fetch_intraday_5m = MagicMock(return_value=pd.DataFrame({
+        'timestamps': [pd.Timestamp("2026-10-31 15:00")],
+        'open': [24800.0], 'high': [24820.0], 'low': [24790.0],
+        'close': [24810.0], 'volume': [1000],
+    }))
+    monkeypatch.setattr(daily_engine, "DataProvider", lambda: mock_dp)
+    monkeypatch.setattr(daily_engine.Config, "load", lambda: MagicMock(auto_trade=False))
+
+    daily_engine.run_intraday_exit(send_telegram=False)
+    assert daily_engine.ACTIVE_POSITION_FILE.exists()   # NOT cleared
+    assert daily_engine.load_active_position() is not None
+
+
+def test_run_intraday_exit_clears_file_when_all_closed(tmp_path, monkeypatch):
+    daily_engine.ACTIVE_POSITION_FILE = tmp_path / "pos.json"
+    pos = {"date": "2026-10-31", "legs": [
+        {"action": "SELL", "strike": 23200, "type": "CE",
+         "tradingsymbol": "NIFTY23200CE", "entry_premium": 50.0,
+         "sl_premium": 75.0, "target_premium": 10.0, "status": "STOP_LOSS_HIT",
+         "exit_premium": 78.0, "points_gained": -28.0}
+    ]}
+    daily_engine.save_active_position(pos)
+    mock_dp = MagicMock()
+    mock_dp.kite = None
+    mock_dp.fetch_intraday_5m = MagicMock(return_value=pd.DataFrame({
+        'timestamps': [pd.Timestamp("2026-10-31 15:00")],
+        'open': [24800.0], 'high': [24820.0], 'low': [24790.0],
+        'close': [24810.0], 'volume': [1000],
+    }))
+    monkeypatch.setattr(daily_engine, "DataProvider", lambda: mock_dp)
+
+    daily_engine.run_intraday_exit(send_telegram=False)
+    assert not daily_engine.ACTIVE_POSITION_FILE.exists()
+
+
 def test_daily_intraday_nifty_setup():
 
     assert daily_engine.NIFTY_SYMBOL == "^NSEI"

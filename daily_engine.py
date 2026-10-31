@@ -297,7 +297,7 @@ def monitor_intraday_sl_tp(send_telegram: bool = True) -> List[Dict[str, Any]]:
             leg["status"] = "STOP_LOSS_HIT"
             leg["exit_premium"] = curr_ltp
             leg["exit_time"] = datetime.now().strftime("%H:%M:%S")
-            leg["points_gained"] = -(entry_prem * 0.50)
+            leg["points_gained"] = entry_prem - curr_ltp   # real fill, not the planned SL
             updated = True
             triggered.append((leg, "STOP_LOSS"))
             logger.warning(f"[SL-Monitor] 🛑 STOP-LOSS HIT on {tsym}: LTP ₹{curr_ltp:.2f} >= SL ₹{sl_prem:.2f}")
@@ -453,7 +453,16 @@ def run_intraday_exit(send_telegram: bool = True) -> Dict[str, Any]:
         except Exception as ee:
             logger.error(f"[DailyEngine] EOD squareoff execution failed: {ee}")
 
-    clear_active_position()
+    # Clear state ONLY when every sold leg actually closed; a rejected square-off
+    # leg (still OPEN) keeps the file so the next run retries instead of orphaning
+    # a live short overnight.
+    open_legs = [l for l in pos.get("legs", []) if l.get("status") not in ("STOP_LOSS_HIT", "TARGET_HIT", "CLOSED")]
+    if open_legs:
+        logger.error(f"[DailyEngine] {len(open_legs)} leg(s) not closed — position file retained for retry.")
+        if send_telegram:
+            send_telegram_message("⚠️ <b>EOD Square-Off Incomplete:</b> open legs remain; position file retained.")
+    else:
+        clear_active_position()
     print("\n[DONE] 3:00 PM Exit processed successfully.\n")
     return exit_payload
 
