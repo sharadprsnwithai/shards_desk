@@ -22,7 +22,6 @@ from nifty_direction_engine.hybrid_engine import HybridSignalEngine
 from nifty_option_lookup import get_current_tuesday_expiry, get_nifty_option_symbol_and_quote
 from telegram_notifier import send_telegram_message, format_intraday_report, format_intraday_exit_report, format_sl_tp_alert
 from event_filter import check_event_risk
-from options_engine import determine_intraday_option_strategy
 from config import Config
 from zerodha_executor import ZerodhaOrderExecutor
 
@@ -60,15 +59,91 @@ def clear_active_position():
             pass
 
 
+def _hedge_leg(sold_strike: int, opt_type: str, quote_fn) -> Dict[str, Any]:
+    """Updated-margin-saver wing for a sold leg: BUY, sold strike +150 (CE) / -150 (PE)."""
+    wing_strike = sold_strike + 150 if opt_type == "CE" else sold_strike - 150
+    tsym, ltp = quote_fn(wing_strike, opt_type)
+    return {
+        "action": "BUY",
+        "strike": wing_strike,
+        "type": opt_type,
+        "tradingsymbol": tsym,
+        "entry_premium": ltp,
+        "desc": "Hedge Wing (Margin Saver)"
+    }
+
+
+def build_legs(bias: str, atm_strike: int, quote_fn) -> List[Dict[str, Any]]:
+    """
+    Builds the desk's legs for a bias at a 10:00 AM snapshot.
+    Strategy: 4-OTM (200-pt) sold leg(s) to SELL, each protected by a BUY hedge
+    wing 150 pts beyond the sold strike. SIDEWAYS strangles both sides.
+    quote_fn(strike, opt_type) -> (tradingsymbol, ltp).
+    """
+    legs: List[Dict[str, Any]] = []
+
+    if bias == "BEARISH":
+        sold = atm_strike + OTM_DISTANCE
+        tsym, ltp = quote_fn(sold, "CE")
+        legs.append({
+            "action": "SELL", "strike": sold, "type": "CE",
+            "tradingsymbol": tsym,
+            "entry_premium": ltp,
+            "sl_premium": round(ltp * 1.50, 1) if ltp > 0 else 0.0,
+            "target_premium": round(ltp * 0.20, 1) if ltp > 0 else 0.0,
+            "desc": "4-OTM Resistance Ceiling (+200 pts)"
+        })
+        legs.append(_hedge_leg(sold, "CE", quote_fn))
+
+    elif bias == "BULLISH":
+        sold = atm_strike - OTM_DISTANCE
+        tsym, ltp = quote_fn(sold, "PE")
+        legs.append({
+            "action": "SELL", "strike": sold, "type": "PE",
+            "tradingsymbol": tsym,
+            "entry_premium": ltp,
+            "sl_premium": round(ltp * 1.50, 1) if ltp > 0 else 0.0,
+            "target_premium": round(ltp * 0.20, 1) if ltp > 0 else 0.0,
+            "desc": "4-OTM Support Floor (-200 pts)"
+        })
+        legs.append(_hedge_leg(sold, "PE", quote_fn))
+
+    else:  # SIDEWAYS / NO_TRADE -> 4-OTM Strangle with wings both sides
+        ce_sold = atm_strike + OTM_DISTANCE
+        pe_sold = atm_strike - OTM_DISTANCE
+        ce_sym, ce_ltp = quote_fn(ce_sold, "CE")
+        pe_sym, pe_ltp = quote_fn(pe_sold, "PE")
+        legs.append({
+            "action": "SELL", "strike": ce_sold, "type": "CE",
+            "tradingsymbol": ce_sym,
+            "entry_premium": ce_ltp,
+            "sl_premium": round(ce_ltp * 1.50, 1) if ce_ltp > 0 else 0.0,
+            "target_premium": round(ce_ltp * 0.20, 1) if ce_ltp > 0 else 0.0,
+            "desc": "4-OTM Call Leg (+200 pts)"
+        })
+        legs.append(_hedge_leg(ce_sold, "CE", quote_fn))
+        legs.append({
+            "action": "SELL", "strike": pe_sold, "type": "PE",
+            "tradingsymbol": pe_sym,
+            "entry_premium": pe_ltp,
+            "sl_premium": round(pe_ltp * 1.50, 1) if pe_ltp > 0 else 0.0,
+            "target_premium": round(pe_ltp * 0.20, 1) if pe_ltp > 0 else 0.0,
+            "desc": "4-OTM Put Leg (-200 pts)"
+        })
+        legs.append(_hedge_leg(pe_sold, "PE", quote_fn))
+
+    return legs
+
+
 def run_intraday_entry(send_telegram: bool = True) -> Dict[str, Any]:
     """
     Executes at 10:00 AM IST on all 5 trading days:
     1. Fetches recent 5m Nifty candles up to 10:00 AM.
     2. Runs Hybrid Engine (Kronos + trained LSTM + VWAP acceptance).
-    3. Builds hedged spread legs via determine_intraday_option_strategy:
-       - BEARISH  -> Bear Call Credit Spread  (SELL CE + BUY CE wing)
-       - BULLISH  -> Bull Put Credit Spread   (SELL PE + BUY PE wing)
-       - SIDEWAYS -> Iron Condor              (SELL CE + BUY CE wing + SELL PE + BUY PE wing)
+    3. Builds 2-leg hedged credit structures via build_legs:
+       - BEARISH  -> Bear Call Credit Spread w/ hedge wing (SELL CE + BUY CE)
+       - BULLISH  -> Bull Put Credit Spread w/ hedge wing (SELL PE + BUY PE)
+       - SIDEWAYS -> 4-OTM Strangle with hedge wings both sides
     4. Fetches live entry option premium quotes from Kite for all legs.
     5. Saves active trade to cache and dispatches Telegram alert.
     """
@@ -110,76 +185,19 @@ def run_intraday_entry(send_telegram: bool = True) -> Dict[str, Any]:
     target_tuesday = get_current_tuesday_expiry(dp.kite)
     expiry_str = target_tuesday.strftime("%d-%b-%Y") if target_tuesday else "Nearest Tuesday"
 
-    # Select 4-OTM strike based on direction with strict 50% SL & 80% Target
-    legs = []
-    if bias == "BEARISH":
-        sold_strike = atm_strike + OTM_DISTANCE
-        tsym, ltp = get_nifty_option_symbol_and_quote(dp.kite, sold_strike, "CE", target_tuesday)
-        sl_prem = round(ltp * 1.50, 1) if ltp > 0 else 0.0
-        tgt_prem = round(ltp * 0.20, 1) if ltp > 0 else 0.0
-        legs.append({
-            "action": "SELL",
-            "strike": sold_strike,
-            "type": "CE",
-            "tradingsymbol": tsym,
-            "entry_premium": ltp,
-            "sl_premium": sl_prem,
-            "target_premium": tgt_prem,
-            "desc": "4-OTM Resistance Ceiling (+200 pts)"
-        })
-        action_desc = f"SELL {sold_strike} CE"
-
-    elif bias == "BULLISH":
-        sold_strike = atm_strike - OTM_DISTANCE
-        tsym, ltp = get_nifty_option_symbol_and_quote(dp.kite, sold_strike, "PE", target_tuesday)
-        sl_prem = round(ltp * 1.50, 1) if ltp > 0 else 0.0
-        tgt_prem = round(ltp * 0.20, 1) if ltp > 0 else 0.0
-        legs.append({
-            "action": "SELL",
-            "strike": sold_strike,
-            "type": "PE",
-            "tradingsymbol": tsym,
-            "entry_premium": ltp,
-            "sl_premium": sl_prem,
-            "target_premium": tgt_prem,
-            "desc": "4-OTM Support Floor (-200 pts)"
-        })
-        action_desc = f"SELL {sold_strike} PE"
-
-    else:  # SIDEWAYS / NO_TRADE -> Sell 4-OTM Strangle (both CE and PE)
-        bias = "SIDEWAYS"
-        ce_strike = atm_strike + OTM_DISTANCE
-        pe_strike = atm_strike - OTM_DISTANCE
-
-        ce_sym, ce_ltp = get_nifty_option_symbol_and_quote(dp.kite, ce_strike, "CE", target_tuesday)
-        pe_sym, pe_ltp = get_nifty_option_symbol_and_quote(dp.kite, pe_strike, "PE", target_tuesday)
-
-        ce_sl = round(ce_ltp * 1.50, 1) if ce_ltp > 0 else 0.0
-        ce_tgt = round(ce_ltp * 0.20, 1) if ce_ltp > 0 else 0.0
-        pe_sl = round(pe_ltp * 1.50, 1) if pe_ltp > 0 else 0.0
-        pe_tgt = round(pe_ltp * 0.20, 1) if pe_ltp > 0 else 0.0
-
-        legs.append({
-            "action": "SELL",
-            "strike": ce_strike,
-            "type": "CE",
-            "tradingsymbol": ce_sym,
-            "entry_premium": ce_ltp,
-            "sl_premium": ce_sl,
-            "target_premium": ce_tgt,
-            "desc": "4-OTM Call Leg (+200 pts)"
-        })
-        legs.append({
-            "action": "SELL",
-            "strike": pe_strike,
-            "type": "PE",
-            "tradingsymbol": pe_sym,
-            "entry_premium": pe_ltp,
-            "sl_premium": pe_sl,
-            "target_premium": pe_tgt,
-            "desc": "4-OTM Put Leg (-200 pts)"
-        })
-        action_desc = f"SELL {pe_strike} PE & {ce_strike} CE (Strangle)"
+    # Build hedged legs: 4-OTM (200-pt) sold legs + 150-pt BUY hedge wings
+    bias = bias if bias in ("BEARISH", "BULLISH") else "SIDEWAYS"
+    legs = build_legs(
+        bias,
+        atm_strike,
+        lambda strike, opt_type: get_nifty_option_symbol_and_quote(
+            dp.kite, strike, opt_type, target_tuesday
+        ),
+    )
+    sold_desc = " & ".join(
+        f"{l['strike']} {l['type']}" for l in legs if l["action"] == "SELL"
+    )
+    action_desc = f"SELL {sold_desc} (+ hedge wings)"
 
     position_payload = {
         "date": str(datetime.now().date()),
@@ -254,8 +272,10 @@ def monitor_intraday_sl_tp(send_telegram: bool = True) -> List[Dict[str, Any]]:
     updated = False
 
     for leg in legs:
-        # Skip legs already closed
+        # Skip already-closed legs and long hedge wings (never SL/TP-monitored)
         if leg.get("status") in ("STOP_LOSS_HIT", "TARGET_HIT", "CLOSED"):
+            continue
+        if leg.get("action") == "BUY":
             continue
 
         tsym = leg.get("tradingsymbol", "")
@@ -347,6 +367,20 @@ def run_intraday_exit(send_telegram: bool = True) -> Dict[str, Any]:
         tradingsymbol = leg.get("tradingsymbol", "")
         entry_prem = float(leg.get("entry_premium", 0.0))
         status = leg.get("status", "ACTIVE")
+
+        # Hedge wings: record as flat (no SL/TP logic ever applied to them)
+        if leg.get("action") == "BUY":
+            legs_pnl.append({
+                "action": "BUY",
+                "strike": leg.get("strike", 0),
+                "type": leg.get("type", "CE"),
+                "tradingsymbol": tradingsymbol,
+                "entry_premium": entry_prem,
+                "exit_premium": entry_prem,
+                "points_gained": 0.0,
+                "status": "HEDGE WING"
+            })
+            continue
 
         # If already exited during the day via real-time SL or Target monitor
         if status == "STOP_LOSS_HIT":
