@@ -64,8 +64,13 @@ class EntryTriggerEngine:
         self._pullback_states: dict[str, Optional[PullbackState]] = {
             sym: None for sym in self._candidates
         }
-        # Symbols that have already emitted a signal today
+        # Symbols that have an active signal / open position
         self._signalled: set[str] = set()
+
+    def reset_signal(self, sym: str) -> None:
+        """Allows re-entry on a symbol if the position was closed/stopped out."""
+        self._signalled.discard(sym)
+        self._pullback_states[sym] = None
 
     # ── Public API ────────────────────────────────────────────────────────────
 

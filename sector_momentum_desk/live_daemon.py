@@ -33,6 +33,7 @@ from dotenv import load_dotenv
 from sector_momentum_desk.config import (
     BIAS_THRESHOLD,
     CANDLE_INTERVAL,
+    DAILY_MAX_LOSS_LIMIT,
     DATA_CACHE_DIR,
     EMA_TRAIL_PERIOD,
     NUM_TOP_STOCKS,
@@ -76,6 +77,7 @@ class SectorMomentumDaemon:
         self.phase1_result: Optional[SelectionResult] = None
         self.trigger_engine: Optional[EntryTriggerEngine] = None
         self.active_positions: dict[str, dict] = {}   # symbol -> {entry_price, stop_loss, direction, ...}
+        self.closed_positions: list[dict] = []        # list of {pnl_pts, ...}
 
     def _handle_exit(self, signum, frame):
         logger.info(f"Received shutdown signal ({signum}). Exiting daemon gracefully...")
@@ -137,10 +139,20 @@ class SectorMomentumDaemon:
                     continue
 
                 # ── 5. 09:30 - 15:15 PM IST: Phase 2 Real-Time 5m Loop ────────
+                # Check for daily max loss circuit breaker
+                total_pnl = sum(pos["pnl_pts"] for pos in self.closed_positions)
+                if total_pnl <= -DAILY_MAX_LOSS_LIMIT:
+                    logger.critical(f"DAILY MAX LOSS LIMIT REACHED ({total_pnl:.2f}). Squaring off and stopping...")
+                    self._square_off_all_positions(now, reason="DAILY_MAX_LOSS")
+                    self.running = False
+                    continue
+
                 self._run_phase_2_tick(now)
 
-                # Sleep to next 5-minute candle boundary (:00, :05, :10, :15, ...)
-                sleep_secs = 300 - (now.timestamp() % 300)
+                # Sleep until 10 seconds after the next 5-minute boundary (:00, :05, :10, ...)
+                now_ts = now.timestamp()
+                next_boundary = (now_ts // 300 + 1) * 300
+                sleep_secs = (next_boundary + 10) - now_ts
                 logger.info(f"Next 5m candle scan in {sleep_secs:.0f}s...")
                 time_module.sleep(max(sleep_secs, 10))
 
@@ -184,16 +196,38 @@ class SectorMomentumDaemon:
         # ── Check New Entries (4 Gates) ──────────────────────────────────────
         new_signals = self.trigger_engine.on_candle(stock_candles, nifty_candles)
         for sig in new_signals:
+            # Stale data guard / timestamp freshness check
+            if "timestamps" in stock_candles.get(sig.symbol, pd.DataFrame()).columns:
+                latest_ts = pd.Timestamp(stock_candles[sig.symbol]["timestamps"].iloc[-1])
+                if (now.replace(tzinfo=None) - latest_ts).total_seconds() > 600:
+                    logger.warning(f"Skipping signal for {sig.nse_symbol}: candle is stale ({latest_ts})")
+                    continue
+
+            # Live fill price reconciliation / slippage adjustment
+            fill_price = sig.entry_price
+            if not self.dry_run:
+                try:
+                    from data_provider import DataProvider
+                    dp = DataProvider()
+                    if dp.kite:
+                        quote = dp.kite.quote(f"NSE:{sig.nse_symbol}")
+                        ltp = float(quote.get(f"NSE:{sig.nse_symbol}", {}).get("last_price", fill_price))
+                        if ltp > 0:
+                            # Apply conservative slippage for market orders
+                            fill_price = ltp * 1.0005 if sig.direction == "LONG" else ltp * 0.9995
+                except Exception as e:
+                    logger.warning(f"Could not reconcile live fill price for {sig.nse_symbol}: {e}")
+
             logger.info(
-                f"🚨 [ENTRY ALERT] {sig.nse_symbol} {sig.direction} @ ₹{sig.entry_price:,.2f} "
-                f"(SL: ₹{sig.stop_loss:,.2f})"
+                f"🚨 [ENTRY ALERT] {sig.nse_symbol} {sig.direction} @ ₹{fill_price:,.2f} "
+                f"(Trigger: ₹{sig.entry_price:,.2f} | SL: ₹{sig.stop_loss:,.2f})"
             )
             # Store active position
             self.active_positions[sig.symbol] = {
                 "symbol": sig.symbol,
                 "nse_symbol": sig.nse_symbol,
                 "direction": sig.direction,
-                "entry_price": sig.entry_price,
+                "entry_price": fill_price,
                 "stop_loss": sig.stop_loss,
                 "entry_time": sig.timestamp,
             }
@@ -230,6 +264,9 @@ class SectorMomentumDaemon:
 
         for sym in closed_symbols:
             del self.active_positions[sym]
+            if self.trigger_engine:
+                self.trigger_engine.reset_signal(sym)
+
 
     def _dispatch_exit_alert(self, pos: dict, exit_price: float, reason: str, now: datetime):
         pnl_pts = (
@@ -238,6 +275,9 @@ class SectorMomentumDaemon:
             else (pos["entry_price"] - exit_price)
         )
         pnl_pct = (pnl_pts / pos["entry_price"]) * 100.0
+        
+        # Track for daily circuit breaker
+        self.closed_positions.append({"pnl_pts": pnl_pts})
 
         icon = "🎯" if pnl_pct > 0 else "🛑"
         reason_label = "10 EMA Trailing Exit" if reason == "10_EMA_TRAIL" else "Stop-Loss Hit"

@@ -8,6 +8,7 @@ from pathlib import Path
 BIAS_THRESHOLD: float = 0.0015   # ±0.15 % Nifty return triggers directional bias
 
 # ── Entry / Risk ──────────────────────────────────────────────────────────────
+DAILY_MAX_LOSS_LIMIT: float = 10000.0
 SL_BUFFER: float = 0.0005        # 0.05 % beyond pullback candle extreme for SL
 EMA_TRAIL_PERIOD: int = 10       # 10-period 5-minute EMA for dynamic trailing stop
 USE_EMA_TRAILING: bool = True    # Enable 10 EMA trailing exit
