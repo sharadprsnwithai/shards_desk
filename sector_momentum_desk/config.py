@@ -12,6 +12,10 @@ SL_BUFFER: float = 0.0005        # 0.05 % beyond pullback candle extreme for SL
 EMA_TRAIL_PERIOD: int = 10       # 10-period 5-minute EMA for dynamic trailing stop
 USE_EMA_TRAILING: bool = True    # Enable 10 EMA trailing exit
 
+# ── Real-world frictions charged to every backtest trade ─────────────────────
+COST_BPS_ROUNDTRIP: float = 25.0   # brokerage + STT + txn charges + GST, both legs
+BREAKOUT_SLIPPAGE_PCT: float = 0.05  # gated breakout entries pay above the touch (entry only)
+
 # ── Selection ─────────────────────────────────────────────────────────────────
 NUM_TOP_STOCKS: int = 3
 

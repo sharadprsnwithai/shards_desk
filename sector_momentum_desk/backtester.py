@@ -19,6 +19,8 @@ import yfinance as yf
 
 from sector_momentum_desk.config import (
     BIAS_THRESHOLD,
+    BREAKOUT_SLIPPAGE_PCT,
+    COST_BPS_ROUNDTRIP,
     DATA_CACHE_DIR,
     EMA_TRAIL_PERIOD,
     NUM_TOP_STOCKS,
@@ -32,6 +34,15 @@ logger = logging.getLogger(__name__)
 
 CACHE_DIR = DATA_CACHE_DIR / "backtest_cache"
 CACHE_DIR.mkdir(parents=True, exist_ok=True)
+
+
+def _apply_costs(pnl_pts: float, entry_price: float) -> float:
+    """Net points after round-trip frictions. Every trade pays both:
+    all entries are gated PDH/ORH-break entries (they fill above the touch),
+    plus round-trip brokerage/STT/txn/GST. Costs apply to wins and losses alike."""
+    net = pnl_pts - entry_price * COST_BPS_ROUNDTRIP / 10_000.0
+    net -= entry_price * BREAKOUT_SLIPPAGE_PCT / 100.0
+    return net
 
 
 @dataclass
@@ -393,7 +404,7 @@ class SectorMomentumBacktester:
                 sl_hit = (c_low <= stop_loss) if bias == "BULLISH" else (c_high >= stop_loss)
                 if sl_hit:
                     exit_price = stop_loss
-                    pnl_pts = (exit_price - entry_price) if direction == "LONG" else (entry_price - exit_price)
+                    pnl_pts = _apply_costs((exit_price - entry_price) if direction == "LONG" else (entry_price - exit_price), entry_price)
                     pnl_pct = (pnl_pts / entry_price) * 100.0
                     risk_pts = abs(entry_price - stop_loss)
                     rr = pnl_pts / risk_pts if risk_pts > 0 else 0.0
@@ -428,7 +439,7 @@ class SectorMomentumBacktester:
                         )
                         if ema_trail_triggered:
                             exit_price = c_close
-                            pnl_pts = (exit_price - entry_price) if direction == "LONG" else (entry_price - exit_price)
+                            pnl_pts = _apply_costs((exit_price - entry_price) if direction == "LONG" else (entry_price - exit_price), entry_price)
                             pnl_pct = (pnl_pts / entry_price) * 100.0
                             risk_pts = abs(entry_price - stop_loss)
                             rr = pnl_pts / risk_pts if risk_pts > 0 else 0.0
@@ -453,7 +464,7 @@ class SectorMomentumBacktester:
                 # 3. Check 15:15 PM Square-off (end of session)
                 if c_ts.time() >= time(15, 15) or i == len(candle_times) - 1:
                     exit_price = c_close
-                    pnl_pts = (exit_price - entry_price) if direction == "LONG" else (entry_price - exit_price)
+                    pnl_pts = _apply_costs((exit_price - entry_price) if direction == "LONG" else (entry_price - exit_price), entry_price)
                     pnl_pct = (pnl_pts / entry_price) * 100.0
                     risk_pts = abs(entry_price - stop_loss)
                     rr = pnl_pts / risk_pts if risk_pts > 0 else 0.0

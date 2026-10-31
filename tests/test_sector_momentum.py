@@ -158,6 +158,22 @@ def test_backtest_ema_is_per_day():
 
 # ─── Task 1: Config + Models ────────────────────────────────────────────────
 
+def test_costs_and_slippage_reduce_pnl():
+    """Round-trip costs (bps) + gated-entry slippage must hit the recorded PnL."""
+    from sector_momentum_desk.backtester import SectorMomentumBacktester, _apply_costs
+    from sector_momentum_desk.config import COST_BPS_ROUNDTRIP, BREAKOUT_SLIPPAGE_PCT
+    bt = SectorMomentumBacktester(period="6mo", source="zerodha")
+    entry, exit_px = 1000.0, 1010.0
+    net = _apply_costs(10.0, entry)
+    expected_costs = entry * COST_BPS_ROUNDTRIP / 10_000.0
+    expected_slip = entry * BREAKOUT_SLIPPAGE_PCT / 100.0
+    assert pytest.approx(10.0 - expected_costs - expected_slip) == net
+
+    # winners and losers both pay: net of a gross -20 stays below -20
+    assert _apply_costs(-20.0, 1000.0) < -20.0
+
+
+
 def test_config_imports():
     from sector_momentum_desk.config import (
         BIAS_THRESHOLD, SL_BUFFER, NUM_TOP_STOCKS, SESSION_END,
