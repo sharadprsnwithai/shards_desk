@@ -17,6 +17,63 @@ try:
 except Exception:
     pass
 
+CUR_DIR = Path(__file__).resolve().parent
+
+import json
+from datetime import datetime, date
+from event_filter import check_event_risk
+
+ACTIVE_MONTHLY_FILE = CUR_DIR / "data_cache" / "active_monthly_positions.json"
+
+
+def save_monthly_positions(positions_data: Dict[str, Any]):
+    ACTIVE_MONTHLY_FILE.parent.mkdir(parents=True, exist_ok=True)
+    with open(ACTIVE_MONTHLY_FILE, "w", encoding="utf-8") as f:
+        json.dump(positions_data, f, indent=2, default=str)
+
+
+def load_monthly_positions() -> Dict[str, Any]:
+    if ACTIVE_MONTHLY_FILE.exists():
+        try:
+            with open(ACTIVE_MONTHLY_FILE, "r", encoding="utf-8") as f:
+                return json.load(f)
+        except Exception as e:
+            logger.warning(f"[MonthlyEngine] Could not read active monthly positions: {e}")
+    return {}
+
+
+def check_mid_month_adjustments(current_prices: Dict[str, float]) -> List[str]:
+    """
+    Mid-Month Dynamic Adjustment Engine:
+    Tracks active monthly positions across app/container restarts via persistence.
+    If current spot price drifts within 1.5% of short strikes, suggests rolling
+    untested side or converting spread to Iron Butterfly.
+    """
+    pos_data = load_monthly_positions()
+    adjustments = []
+    if not pos_data:
+        return adjustments
+
+    for symbol, pos in pos_data.items():
+        curr_spot = current_prices.get(symbol)
+        if not curr_spot:
+            continue
+        legs = pos.get("legs", [])
+        for leg in legs:
+            if leg.get("action") == "SELL":
+                strike = leg.get("strike", 0)
+                dist_pct = abs(curr_spot - strike) / strike * 100.0
+                if dist_pct <= 1.5:
+                    msg = (
+                        f"⚠️ <b>MID-MONTH ADJUSTMENT ALERT ({symbol}):</b> "
+                        f"Spot (₹{curr_spot:,.2f}) is within {dist_pct:.2f}% of short strike {strike} {leg['type']}. "
+                        f"Recommended action: Roll untested side closer or convert to Iron Butterfly."
+                    )
+                    adjustments.append(msg)
+                    logger.warning(msg)
+    return adjustments
+
+
 logger = logging.getLogger(__name__)
 
 # Search paths for kronos_lib
@@ -80,6 +137,12 @@ def run_monthly_analysis(send_telegram: bool = True) -> List[Dict[str, Any]]:
     lookback = 120
     pred_len = 30
     forecast_results = []
+    current_prices = {}
+    monthly_positions_payload = {}
+
+    event_note = check_event_risk()
+    if event_note:
+        logger.info(f"[MonthlyEngine] Macro Event Risk Detected: {event_note}. Widening hedge wings by 1.5x for safety.")
 
     for asset in MONTHLY_ASSETS:
         symbol = asset["symbol"]
@@ -121,6 +184,7 @@ def run_monthly_analysis(send_telegram: bool = True) -> List[Dict[str, Any]]:
             continue
 
         curr_close = round(float(x_df["close"].iloc[-1]), 2)
+        current_prices[symbol] = curr_close
         proj_close = round(float(pred_df["close"].iloc[-1]), 2)
         support = round(float(pred_df["low"].min()), 2)
         resistance = round(float(pred_df["high"].max()), 2)
@@ -159,8 +223,9 @@ def run_monthly_analysis(send_telegram: bool = True) -> List[Dict[str, Any]]:
             horizon_days=pred_len
         )
 
-        # If models diverge, widen containment wings / require higher safety
-        effective_wing = wing if confidence != "DIVERGENT" else int(wing * 1.2)
+        # If models diverge or macro event risk exists, widen containment wings
+        base_wing = wing if confidence != "DIVERGENT" else int(wing * 1.2)
+        effective_wing = int(base_wing * 1.5) if event_note else base_wing
 
         # Align target for option spread strategy
         if ensemble_bias == "Bullish":
@@ -200,6 +265,11 @@ def run_monthly_analysis(send_telegram: bool = True) -> List[Dict[str, Any]]:
             "legs": strategy_info.get("legs", [])
         }
         forecast_results.append(item)
+        monthly_positions_payload[symbol] = {
+            "date": str(date.today()),
+            "entry_spot": curr_close,
+            "legs": strategy_info.get("legs", [])
+        }
 
         # Console print
         print(f"[{symbol}] {name} (Lot Size: {lot_size})")
@@ -210,6 +280,18 @@ def run_monthly_analysis(send_telegram: bool = True) -> List[Dict[str, Any]]:
             for leg in item["legs"]:
                 print(f"      [{leg['action']}] {leg['strike']} {leg['type']} ({leg['desc']})")
         print("-" * 90)
+
+    # Save monthly positions for persistence across app/container restarts
+    if monthly_positions_payload:
+        save_monthly_positions(monthly_positions_payload)
+
+    # Check mid-month dynamic adjustments against current spot prices
+    adjustments = check_mid_month_adjustments(current_prices)
+    if adjustments:
+        logger.warning(f"[MonthlyEngine] {len(adjustments)} mid-month adjustment(s) triggered!")
+        if send_telegram:
+            for adj in adjustments:
+                send_telegram_message(adj)
 
     # Dispatch to Telegram if enabled
     if send_telegram and forecast_results:

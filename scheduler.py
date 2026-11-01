@@ -109,6 +109,16 @@ def check_scheduled_triggers(
             run_intraday_exit_fn(send_telegram=True)
         state["last_exit_date"] = today
 
+    # 2b. 3:10 PM (15:10) IST OpenRouter AI Positional Portfolio Advisor (Mon-Fri)
+    if weekday < 5 and hour == 15 and minute == 10 and state.get("last_ai_advisor_date") != today:
+        logger.info("[Scheduler] Triggering 3:10 PM OpenRouter AI Positional Portfolio Advisor...")
+        try:
+            from positional_ai_advisor import run_positional_ai_advisor
+            run_positional_ai_advisor(send_telegram=True)
+        except Exception as e:
+            logger.error(f"[Scheduler] Positional AI Advisor error: {e}", exc_info=True)
+        state["last_ai_advisor_date"] = today
+
     # 3. 4:00 PM (16:00) IST Last Day of Month: Auto-Retrain Monthly Multi-Asset LSTM & Nifty Intraday LSTM
     if is_last_day_of_month(today) and hour == 16 and minute == 0 and state.get("last_monthly_train_date") != today:
         logger.info("[Scheduler] Triggering Last-Day-of-Month 4:00 PM Model Retraining...")

@@ -564,7 +564,6 @@ class ZerodhaOrderExecutor:
             oid_str = f" [ID: <code>{oid}</code>]" if oid and not oid.startswith("PAPER") else ""
             lines.append(f"   • SELL <b>{qty}x {tsym}</b> @ <b>₹{fill_p:.2f}</b> ({status}){oid_str}")
 
-        lines.append("\n⚡ <i>Automatic 50% Stop-Loss & 80% Target monitor is actively watching this position.</i>")
         send_telegram_message("\n".join(lines))
 
 
