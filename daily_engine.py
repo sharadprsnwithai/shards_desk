@@ -129,15 +129,33 @@ def build_legs(bias: str, atm_strike: int, quote_fn) -> List[Dict[str, Any]]:
 def run_intraday_entry(send_telegram: bool = True) -> Dict[str, Any]:
     """
     Executes at 10:00 AM IST on all 5 trading days:
-    1. Fetches recent 5m Nifty candles up to 10:00 AM.
-    2. Runs Hybrid Engine (Kronos + trained LSTM + VWAP acceptance).
-    3. Builds 2-leg hedged credit structures via build_legs:
+    1. Checks market hours guard (9:15 AM - 3:30 PM IST, Mon-Fri).
+    2. Checks for existing active position today (duplicate entry guard).
+    3. Fetches recent 5m Nifty candles up to 10:00 AM.
+    4. Runs Hybrid Engine (Kronos + trained LSTM + VWAP acceptance).
+    5. Builds 2-leg hedged credit structures via build_legs:
        - BEARISH  -> Bear Call Credit Spread w/ hedge wing (SELL CE + BUY CE)
        - BULLISH  -> Bull Put Credit Spread w/ hedge wing (SELL PE + BUY PE)
        - SIDEWAYS -> 4-OTM Strangle with hedge wings both sides
-    4. Fetches live entry option premium quotes from Kite for all legs.
-    5. Saves active trade to cache and dispatches Telegram alert.
+    6. Fetches live entry option premium quotes from Kite for all legs.
+    7. Saves active trade to cache and dispatches Telegram alert.
     """
+    # Guard 1: Market Hours Check
+    if not ZerodhaOrderExecutor._is_market_hours():
+        msg = "[DailyEngine] ⛔ Entry blocked: Outside NSE market hours (9:15 AM – 3:30 PM IST, Mon–Fri)."
+        logger.warning(msg)
+        print(f"\n  {msg}\n")
+        return {}
+
+    # Guard 2: Duplicate Position Guard
+    existing_pos = load_active_position()
+    today_str = str(datetime.now().date())
+    if existing_pos and existing_pos.get("date") == today_str:
+        msg = f"[DailyEngine] ⚠️ Entry blocked: Active position for today ({today_str}) already exists. Preventing duplicate trade."
+        logger.warning(msg)
+        print(f"\n  {msg}\n")
+        return {}
+
     print("\n" + "=" * 95)
     print("  ⚡  10:00 AM NIFTY 50 HYBRID OPTION SELLING DESK (ENTRY)")
     print("  Schedule: Monday to Friday (All 5 Days) | Rule: 4-OTM (200-Point Buffer)")
